@@ -1,0 +1,14 @@
+# Common
+common.ok: "成功"
+common.not_found: "未找到"
+common.forbidden: "无权限"
+common.unauthorized: "请先登录"
+
+# Internal errors
+internal.panic: "服务器内部错误"
+internal.unwrapped: "未分类错误"
+
+# Dictionary
+dictionary.type.not_found: "字典类型不存在"
+
+# Future: OKR keys land here in M4

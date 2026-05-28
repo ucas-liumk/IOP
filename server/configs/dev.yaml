@@ -1,0 +1,20 @@
+env: dev
+
+server:
+  addr: ":8080"
+  allowed_origins: ["*"]
+
+db:
+  dsn: "postgres://iop:iop_dev@localhost:5433/iop?sslmode=disable"
+
+redis:
+  addr: "localhost:6380"
+
+minio:
+  endpoint: "localhost:9100"
+  access_key: "iop_dev"
+  secret_key: "iop_dev_password"
+
+logger:
+  level: "debug"
+  format: "console"
