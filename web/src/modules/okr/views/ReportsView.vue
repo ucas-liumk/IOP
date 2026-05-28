@@ -36,7 +36,7 @@
       <li v-for="r in reports" :key="r.id" class="card">
         <div class="row">
           <span :class="['badge', r.type]">{{ r.type === 'daily' ? '日报' : '周报' }}</span>
-          <span class="muted">{{ r.period.Start.slice(0,10) }} → {{ r.period.End.slice(0,10) }}</span>
+          <span class="muted">{{ r.period.start.slice(0,10) }} → {{ r.period.end.slice(0,10) }}</span>
           <span class="muted">提交于 {{ new Date(r.submitted_at).toLocaleString() }}</span>
         </div>
         <div class="summary">{{ r.summary }}</div>

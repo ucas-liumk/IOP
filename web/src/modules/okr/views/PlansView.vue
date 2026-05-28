@@ -37,15 +37,15 @@
         <div class="row">
           <span :class="['badge', p.level]">{{ levelLabel(p.level) }}</span>
           <strong>{{ p.title }}</strong>
-          <span class="muted">{{ formatDate(p.period.Start) }} → {{ formatDate(p.period.End) }}</span>
+          <span class="muted">{{ formatDate(p.period.start) }} → {{ formatDate(p.period.end) }}</span>
           <span :class="['status', p.status]">{{ p.status }}</span>
         </div>
         <div class="items" v-if="p.items?.length">
-          <div v-for="it in p.items" :key="it.ID" class="item">
-            <span class="weight">{{ it.Weight }}%</span>
-            <span class="title">{{ it.Title }}</span>
-            <span class="progress">{{ it.ProgressPct }}%</span>
-            <span :class="['itemstatus', it.Status]">{{ it.Status }}</span>
+          <div v-for="it in p.items" :key="it.id" class="item">
+            <span class="weight">{{ it.weight }}%</span>
+            <span class="title">{{ it.title }}</span>
+            <span class="progress">{{ it.progress_pct }}%</span>
+            <span :class="['itemstatus', it.status]">{{ it.status }}</span>
           </div>
         </div>
         <details>

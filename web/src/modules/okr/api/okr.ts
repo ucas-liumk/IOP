@@ -4,39 +4,39 @@ export interface Plan {
   id: string;
   level: "year" | "half_year" | "month" | "week";
   title: string;
-  period: { Start: string; End: string };
+  period: { start: string; end: string };
   status: "draft" | "active" | "closed";
   items: PlanItem[];
   owner: string;
 }
 
 export interface PlanItem {
-  ID: string;
-  Title: string;
-  Weight: number;
-  ProgressPct: number;
-  ProgressNote: string;
-  Status: string;
-  SortOrder: number;
+  id: string;
+  title: string;
+  weight: number;
+  progress_pct: number;
+  progress_note?: string;
+  status: string;
+  sort_order: number;
 }
 
 export interface Report {
   id: string;
   type: "daily" | "weekly";
   owner: string;
-  period: { Start: string; End: string };
+  period: { start: string; end: string };
   summary: string;
   entries: ReportEntry[];
   submitted_at: string;
 }
 
 export interface ReportEntry {
-  ID: string;
-  Title: string;
-  Detail: string;
-  ProgressNote: string;
-  PlanItemID?: string;
-  SortOrder: number;
+  id: string;
+  title: string;
+  detail?: string;
+  progress_note?: string;
+  plan_item_id?: string;
+  sort_order: number;
 }
 
 export async function listPlans(level?: string): Promise<Plan[]> {

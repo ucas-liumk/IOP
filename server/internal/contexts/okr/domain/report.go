@@ -8,23 +8,23 @@ import (
 
 // ReportEntry is an entity within Report aggregate.
 type ReportEntry struct {
-	ID           kernel.ID
-	PlanItemID   *kernel.ID
-	Title        string
-	Detail       string
-	ProgressNote string
-	SortOrder    int
+	ID           kernel.ID  `json:"id"`
+	PlanItemID   *kernel.ID `json:"plan_item_id,omitempty"`
+	Title        string     `json:"title"`
+	Detail       string     `json:"detail,omitempty"`
+	ProgressNote string     `json:"progress_note,omitempty"`
+	SortOrder    int        `json:"sort_order"`
 }
 
 // Report is the aggregate root for daily/weekly status.
 type Report struct {
-	ID          kernel.ID
-	Type        ReportType
-	Owner       kernel.ID
-	Period      Period
-	Summary     string
-	Entries     []*ReportEntry
-	SubmittedAt time.Time
+	ID          kernel.ID      `json:"id"`
+	Type        ReportType     `json:"type"`
+	Owner       kernel.ID      `json:"owner"`
+	Period      Period         `json:"period"`
+	Summary     string         `json:"summary"`
+	Entries     []*ReportEntry `json:"entries"`
+	SubmittedAt time.Time      `json:"submitted_at"`
 }
 
 // NewDailyReport enforces Period == 1 day.

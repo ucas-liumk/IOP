@@ -9,29 +9,29 @@ import (
 // PlanItem is an entity inside Plan aggregate; not a standalone aggregate root.
 // Modify only via Plan methods (AddItem / UpdateItemProgress / etc.).
 type PlanItem struct {
-	ID           kernel.ID
-	Title        string
-	Weight       int
-	ProgressPct  int
-	ProgressNote string
-	Status       ItemStatus
-	SortOrder    int
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID           kernel.ID  `json:"id"`
+	Title        string     `json:"title"`
+	Weight       int        `json:"weight"`
+	ProgressPct  int        `json:"progress_pct"`
+	ProgressNote string     `json:"progress_note,omitempty"`
+	Status       ItemStatus `json:"status"`
+	SortOrder    int        `json:"sort_order"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // Plan is the aggregate root.  All invariants enforced via Plan methods.
 type Plan struct {
-	ID        kernel.ID
-	Level     PlanLevel
-	Owner     kernel.ID
-	Period    Period
-	Title     string
-	ParentID  *kernel.ID
-	Status    PlanStatus
-	Items     []*PlanItem
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID        kernel.ID   `json:"id"`
+	Level     PlanLevel   `json:"level"`
+	Owner     kernel.ID   `json:"owner"`
+	Period    Period      `json:"period"`
+	Title     string      `json:"title"`
+	ParentID  *kernel.ID  `json:"parent_id,omitempty"`
+	Status    PlanStatus  `json:"status"`
+	Items     []*PlanItem `json:"items"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 // NewPlan constructs a draft plan; validates basic invariants.

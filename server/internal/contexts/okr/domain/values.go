@@ -62,8 +62,8 @@ const (
 // Both bounds are inclusive in business semantics; in DB queries we use < end+1day
 // to keep half-open ranges performant.
 type Period struct {
-	Start time.Time
-	End   time.Time
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
 }
 
 // Days returns the number of inclusive days.

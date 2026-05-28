@@ -110,6 +110,8 @@ func (r *PGPlanRepo) List(ctx context.Context, f domain.PlanFilter) ([]*domain.P
 			return err
 		}
 		defer rows.Close()
+		ids := []kernel.ID{}
+		byID := map[kernel.ID]*domain.Plan{}
 		for rows.Next() {
 			var raw domain.Plan
 			var level, status string
@@ -122,8 +124,39 @@ func (r *PGPlanRepo) List(ctx context.Context, f domain.PlanFilter) ([]*domain.P
 			raw.ParentID = parentID
 			raw.Items = []*domain.PlanItem{}
 			out = append(out, &raw)
+			ids = append(ids, raw.ID)
+			byID[raw.ID] = &raw
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		// Hydrate items in one batch query (avoid N+1).
+		if len(ids) > 0 {
+			idStrings := make([]string, len(ids))
+			for i, id := range ids {
+				idStrings[i] = string(id)
+			}
+			itRows, err := tx.Query(ctx,
+				`SELECT id, plan_id, title, weight, progress_pct, COALESCE(progress_note,''), status, sort_order, created_at, updated_at
+				 FROM okr_plan_item WHERE plan_id = ANY($1::uuid[]) ORDER BY sort_order`, idStrings)
+			if err != nil {
+				return err
+			}
+			defer itRows.Close()
+			for itRows.Next() {
+				it := &domain.PlanItem{}
+				var planID kernel.ID
+				var st string
+				if err := itRows.Scan(&it.ID, &planID, &it.Title, &it.Weight, &it.ProgressPct, &it.ProgressNote, &st, &it.SortOrder, &it.CreatedAt, &it.UpdatedAt); err != nil {
+					return err
+				}
+				it.Status = domain.ItemStatus(st)
+				if p, ok := byID[planID]; ok {
+					p.Items = append(p.Items, it)
+				}
+			}
+		}
+		return nil
 	})
 	return out, err
 }
