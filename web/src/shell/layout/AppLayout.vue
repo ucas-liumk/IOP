@@ -19,6 +19,9 @@ import NavBar from "./NavBar.vue";
 }
 .app-main {
   flex: 1;
-  padding: var(--space-6);
+  padding: var(--sp-7) var(--sp-7) var(--sp-9);
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
 }
 </style>

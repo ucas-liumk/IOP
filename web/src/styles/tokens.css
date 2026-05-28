@@ -1,19 +1,82 @@
+/* ===== 协同研究解决平台 - 设计令牌 ===== */
 :root {
-  --color-primary: #1677ff;
-  --color-text: #1f2329;
-  --color-text-muted: #646a73;
-  --color-bg: #f5f6f7;
-  --color-surface: #ffffff;
-  --color-border: #dee0e3;
-  --color-success: #00a870;
-  --color-danger: #d54941;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --radius: 6px;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.08);
+  /* Brand */
+  --brand-blue: #1e5fd9;
+  --brand-blue-600: #1a52bd;
+  --brand-blue-50: #eef3fe;
+  --brand-blue-100: #dbe6fd;
+  --brand-red: #d63838;
+  --brand-red-50: #fdecec;
+  --brand-red-100: #fbd5d5;
+
+  --primary: var(--brand-blue);
+  --primary-hover: var(--brand-blue-600);
+  --primary-soft: var(--brand-blue-50);
+  --primary-softer: var(--brand-blue-100);
+  --accent: var(--brand-red);
+  --accent-soft: var(--brand-red-50);
+
+  /* Surface */
+  --bg: #f4f6fb;
+  --bg-deep: #eef1f7;
+  --surface: #ffffff;
+  --surface-2: #fafbfd;
+  --surface-3: #f6f8fc;
+
+  /* Text */
+  --text: #0d1b2e;
+  --text-2: #41526b;
+  --text-3: #7b8aa3;
+  --text-4: #a8b3c5;
+  --text-inv: #ffffff;
+
+  /* Border */
+  --border: #e6eaf2;
+  --border-strong: #d4dbe8;
+  --border-soft: #eef1f7;
+
+  /* Status */
+  --success: #1aa971;
+  --success-soft: #e6f7ef;
+  --warning: #e8920e;
+  --warning-soft: #fff5e1;
+  --danger: #e23a3a;
+  --danger-soft: #fdecec;
+  --info: #1e5fd9;
+  --info-soft: #eef3fe;
+  --neutral: #6b7891;
+  --neutral-soft: #eef1f7;
+  --purple: #7c4ddb;
+  --purple-soft: #f1ecfb;
+  --teal: #0fa8a3;
+  --teal-soft: #e3f6f5;
+
+  /* Stage colors */
+  --stage-submit: #1e5fd9;
+  --stage-review: #0fa8a3;
+  --stage-propose: #e8920e;
+  --stage-meeting: #7c4ddb;
+  --stage-arbitrate: #d63838;
+  --stage-consult: #2a8856;
+  --stage-implement: #1a7fb8;
+  --stage-evaluate: #b14fa0;
+
+  /* Spacing */
+  --sp-1: 4px;   --sp-2: 8px;   --sp-3: 12px;  --sp-4: 16px;
+  --sp-5: 20px;  --sp-6: 24px;  --sp-7: 32px;  --sp-8: 40px;
+  --sp-9: 56px;  --sp-10: 72px;
+
+  /* Radius */
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px; --r-pill: 999px;
+
+  /* Shadow */
+  --sh-1: 0 1px 2px rgba(13,27,46,.04), 0 1px 1px rgba(13,27,46,.03);
+  --sh-2: 0 2px 8px rgba(13,27,46,.06), 0 1px 2px rgba(13,27,46,.04);
+  --sh-3: 0 8px 24px rgba(13,27,46,.08), 0 2px 6px rgba(13,27,46,.05);
+  --sh-4: 0 20px 48px rgba(13,27,46,.12), 0 4px 12px rgba(13,27,46,.06);
+
+  /* Type */
+  --ff-sans: "Plus Jakarta Sans", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --ff-mono: "JetBrains Mono", "DM Mono", ui-monospace, monospace;
+  --ff-display: "Plus Jakarta Sans", "Noto Sans SC", sans-serif;
 }
