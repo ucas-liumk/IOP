@@ -1,0 +1,104 @@
+# IOP production compose.
+# Differences from dev:
+#  - PG / Redis / MinIO use internal-only networking (no host port binding)
+#  - server + web run as containers
+#  - nginx terminates HTTPS + reverse-proxies /api → server, serves web dist
+#  - all images pinned via IMAGE_TAG env var (default: latest)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     ${IOP_DB_USER:-iop}
+      POSTGRES_PASSWORD: ${IOP_DB_PASSWORD:?required}
+      POSTGRES_DB:       ${IOP_DB_NAME:-iop}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${IOP_MINIO_ACCESS_KEY:?required}
+      MINIO_ROOT_PASSWORD: ${IOP_MINIO_SECRET_KEY:?required}
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  server:
+    image: ghcr.io/leo/iop-server:${IMAGE_TAG:-latest}
+    depends_on:
+      db:    { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    environment:
+      IOP_ENV:               prod
+      IOP_DB_DSN:            postgres://${IOP_DB_USER:-iop}:${IOP_DB_PASSWORD}@db:5432/${IOP_DB_NAME:-iop}?sslmode=disable
+      IOP_REDIS_ADDR:        redis:6379
+      IOP_MINIO_ENDPOINT:    minio:9000
+      IOP_MINIO_ACCESS_KEY:  ${IOP_MINIO_ACCESS_KEY}
+      IOP_MINIO_SECRET_KEY:  ${IOP_MINIO_SECRET_KEY}
+      IOP_AUTH_JWT_SECRET:   ${IOP_JWT_SECRET:?required}
+      IOP_LOGGER_LEVEL:      info
+      IOP_LOGGER_FORMAT:     json
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/leo/iop-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [server, web]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf.prod:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+  backup:
+    image: postgres:16-alpine
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      PGHOST:     db
+      PGPORT:     "5432"
+      PGUSER:     ${IOP_DB_USER:-iop}
+      PGPASSWORD: ${IOP_DB_PASSWORD}
+      PGDATABASE: ${IOP_DB_NAME:-iop}
+      BACKUP_DIR: /var/backups/iop
+    volumes:
+      - backup-data:/var/backups/iop
+      - ./backup/pg_backup.sh:/usr/local/bin/pg_backup.sh:ro
+    entrypoint: ["sh", "-c", "while true; do sleep 24h; /usr/local/bin/pg_backup.sh; done"]
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:
+  minio-data:
+  backup-data:

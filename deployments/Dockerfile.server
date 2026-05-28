@@ -1,0 +1,30 @@
+# Multi-stage build for IOP Go server.
+# Stage 1: build static binary from source.
+# Stage 2: minimal runtime with only the binary + migrations + configs/i18n.
+
+FROM golang:1.22-alpine AS build
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build \
+    -trimpath \
+    -ldflags "-s -w -X github.com/leo/iop/server/internal/interface.Version=${VERSION}" \
+    -o /out/server ./cmd/server && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/tenantctl ./cmd/tenantctl
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S iop && adduser -S -G iop iop
+WORKDIR /app
+COPY --from=build /out/server     /usr/local/bin/server
+COPY --from=build /out/migrate    /usr/local/bin/migrate
+COPY --from=build /out/tenantctl  /usr/local/bin/tenantctl
+COPY migrations/   ./migrations/
+COPY configs/      ./configs/
+USER iop
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/server"]

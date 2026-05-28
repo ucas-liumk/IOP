@@ -1,0 +1,87 @@
+# Production nginx config.  HTTPS termination + reverse proxy to server,
+# static serve for web dist, rate limiting at edge.
+
+worker_processes auto;
+worker_rlimit_nofile 65535;
+events { worker_connections 4096; }
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile      on;
+    server_tokens off;
+    keepalive_timeout 65;
+
+    # Compression
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+    gzip_min_length 1024;
+
+    # Rate limits (per-IP edge protection; per-tenant + per-user enforced by server-side middleware)
+    limit_req_zone $binary_remote_addr zone=auth:10m rate=10r/m;     # login burst limit
+    limit_req_zone $binary_remote_addr zone=api:10m  rate=120r/m;    # general api
+
+    upstream iop_server { server server:8080; keepalive 32; }
+    upstream iop_web    { server web:80;       keepalive 32; }
+
+    # HTTP -> HTTPS redirect
+    server {
+        listen 80 default_server;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name _;
+
+        ssl_certificate     /etc/nginx/certs/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/privkey.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_ciphers         HIGH:!aNULL:!MD5;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Frame-Options             "SAMEORIGIN" always;
+        add_header X-Content-Type-Options      "nosniff" always;
+        add_header Referrer-Policy             "no-referrer-when-downgrade" always;
+
+        # File upload limit matches IOP_FILE_MAX (50 MB).
+        client_max_body_size 55m;
+
+        # /api/auth/login: tighter rate limit
+        location /api/auth/login {
+            limit_req zone=auth burst=5 nodelay;
+            proxy_pass http://iop_server;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+        }
+
+        # General API
+        location /api/ {
+            limit_req zone=api burst=30 nodelay;
+            proxy_pass http://iop_server;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_read_timeout 60s;
+        }
+
+        # System endpoints (no rate-limit; for monitoring)
+        location ~ ^/(livez|readyz|healthz|version|metrics)$ {
+            allow 10.0.0.0/8;
+            allow 172.16.0.0/12;
+            allow 192.168.0.0/16;
+            deny all;
+            proxy_pass http://iop_server;
+        }
+
+        # Web SPA
+        location / {
+            proxy_pass http://iop_web;
+            proxy_set_header Host $host;
+        }
+    }
+}
