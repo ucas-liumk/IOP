@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 // Config is what app wiring passes in from configs/dev.yaml.
@@ -15,6 +17,7 @@ type Config struct {
 	MinConns        int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
+	Logger          *zap.Logger // used by slow query tracer (optional; nil => no tracer)
 }
 
 // NewPool returns a connected pgx pool. Caller owns Close.
@@ -40,6 +43,14 @@ func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 	pcfg.MinConns = cfg.MinConns
 	pcfg.MaxConnLifetime = cfg.MaxConnLifetime
 	pcfg.MaxConnIdleTime = cfg.MaxConnIdleTime
+	if cfg.Logger != nil {
+		pcfg.ConnConfig.Tracer = NewSlowQueryTracer(cfg.Logger)
+	}
+	// Defensive: RESET search_path on connection return (T2.3 double-protect).
+	pcfg.AfterRelease = func(conn *pgx.Conn) bool {
+		_, _ = conn.Exec(context.Background(), "RESET search_path")
+		return true
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {

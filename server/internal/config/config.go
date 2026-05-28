@@ -29,6 +29,9 @@ type Config struct {
 		Level  string `mapstructure:"level"`
 		Format string `mapstructure:"format"`
 	} `mapstructure:"logger"`
+	Auth struct {
+		JWTSecret string `mapstructure:"jwt_secret"`
+	} `mapstructure:"auth"`
 }
 
 // Load reads configs/<env>.yaml + env overrides. Env vars: IOP_<SECTION>_<KEY>.
