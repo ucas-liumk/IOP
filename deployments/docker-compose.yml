@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: iop
+      POSTGRES_PASSWORD: iop_dev
+      POSTGRES_DB: iop
+    ports: ["5433:5432"]  # 5432 occupied by SSH tunnel; use 5433 on host
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iop -d iop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6380:6379"]  # 6379 occupied by SSH tunnel
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: iop_dev
+      MINIO_ROOT_PASSWORD: iop_dev_password
+    ports: ["9100:9000", "9101:9001"]  # 9000/9001 occupied by SSH tunnel
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ../server
+      dockerfile: ../deployments/Dockerfile.server
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    environment:
+      IOP_ENV: dev
+      IOP_DB_DSN: postgres://iop:iop_dev@db:5432/iop?sslmode=disable
+      IOP_REDIS_ADDR: redis:6379
+      IOP_MINIO_ENDPOINT: minio:9000
+      IOP_MINIO_ACCESS_KEY: iop_dev
+      IOP_MINIO_SECRET_KEY: iop_dev_password
+    ports: ["8080:8080"]
+    profiles: ["full"]
+
+  web:
+    build:
+      context: ../web
+      dockerfile: ../deployments/Dockerfile.web
+    ports: ["5173:80"]
+    profiles: ["full"]
+
+volumes:
+  pg-data:
+  minio-data:
