@@ -13,6 +13,9 @@ import (
 	loggerinfra "github.com/leo/iop/server/internal/infrastructure/logger"
 	pginfra "github.com/leo/iop/server/internal/infrastructure/pg"
 	redisinfra "github.com/leo/iop/server/internal/infrastructure/redis"
+	okrapp "github.com/leo/iop/server/internal/contexts/okr/application"
+	okrinfra "github.com/leo/iop/server/internal/contexts/okr/infrastructure"
+	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
 	iface "github.com/leo/iop/server/internal/interface"
 	"github.com/leo/iop/server/internal/interface/middleware"
 	"github.com/leo/iop/server/internal/services/audit"
@@ -45,6 +48,7 @@ type App struct {
 	Audit       *audit.Service
 	Notif       *notification.Service
 	FileStorage *filestorage.Service
+	OKR         *okrapp.Service
 }
 
 // Build wires components in dependency order. Returns (*App, cleanup, error).
@@ -177,6 +181,12 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		FileStorage: fsSvc,
 	}
 
+	// OKR bounded context wiring
+	okrPlans := okrinfra.NewPGPlanRepo(tenantDB)
+	okrReports := okrinfra.NewPGReportRepo(tenantDB)
+	okrRollup := okrinfra.NewPGRollupQuery(tenantDB)
+	a.OKR = okrapp.NewService(okrPlans, okrReports, okrRollup, bus, clk)
+
 	cleanup := func() {
 		_ = auditSvc.Close()
 		_ = bus.Close()
@@ -209,5 +219,6 @@ func (a *App) Engine() *gin.Engine {
 	if a.FileStorage != nil {
 		filestorage.RegisterRoutes(authT, a.FileStorage)
 	}
+	okriface.RegisterRoutes(authT, a.OKR)
 	return r
 }

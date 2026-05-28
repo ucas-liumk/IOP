@@ -19,19 +19,28 @@ function createClient(): AxiosInstance {
   instance.interceptors.request.use((cfg: InternalAxiosRequestConfig) => {
     const method = (cfg.method ?? "get").toUpperCase();
     if (method !== "GET" && method !== "HEAD") {
-      // Idempotency-Key for all mutations. M2 server-side middleware will enforce.
+      // Idempotency-Key for all mutations. M2 server-side middleware caches replies.
       cfg.headers.set("Idempotency-Key", newId());
     }
     // X-Request-Id for trace propagation. Server echoes via RequestID middleware.
     cfg.headers.set("X-Request-Id", newId());
+    // Auth: attach access token if present.  Skip /auth/login + /auth/refresh.
+    const skip = cfg.url?.endsWith("/auth/login") || cfg.url?.endsWith("/auth/refresh");
+    if (!skip) {
+      const tok = localStorage.getItem("iop.access_token");
+      if (tok) cfg.headers.set("Authorization", "Bearer " + tok);
+    }
     return cfg;
   });
 
   instance.interceptors.response.use(
     (res) => res,
     (err) => {
-      if (err.response?.status === 401) {
-        // M2: redirect to login. M1: just propagate.
+      if (err.response?.status === 401 && !err.config.url?.endsWith("/auth/login")) {
+        // Drop token; redirect to login.  Real refresh flow goes here in M3+.
+        localStorage.removeItem("iop.access_token");
+        localStorage.removeItem("iop.refresh_token");
+        if (location.pathname !== "/login") location.href = "/login";
       }
       return Promise.reject(err);
     },
