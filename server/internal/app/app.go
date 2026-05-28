@@ -15,9 +15,12 @@ import (
 	redisinfra "github.com/leo/iop/server/internal/infrastructure/redis"
 	iface "github.com/leo/iop/server/internal/interface"
 	"github.com/leo/iop/server/internal/interface/middleware"
+	"github.com/leo/iop/server/internal/services/audit"
 	"github.com/leo/iop/server/internal/services/dictionary"
+	"github.com/leo/iop/server/internal/services/filestorage"
 	"github.com/leo/iop/server/internal/services/iam"
 	"github.com/leo/iop/server/internal/services/localization"
+	"github.com/leo/iop/server/internal/services/notification"
 	"github.com/leo/iop/server/internal/services/tenancy"
 	"github.com/leo/iop/server/internal/shared/eventbus"
 	"github.com/leo/iop/server/internal/shared/kernel"
@@ -35,10 +38,13 @@ type App struct {
 	Tenant     *tenantdb.TenantDB
 	Bus        *eventbus.InprocBus
 	Health     *health.Registry
-	Dictionary *dictionary.Service
-	I18n       *localization.Service
-	Tenancy    *tenancy.Service
-	IAM        *iam.Service
+	Dictionary  *dictionary.Service
+	I18n        *localization.Service
+	Tenancy     *tenancy.Service
+	IAM         *iam.Service
+	Audit       *audit.Service
+	Notif       *notification.Service
+	FileStorage *filestorage.Service
 }
 
 // Build wires components in dependency order. Returns (*App, cleanup, error).
@@ -118,22 +124,61 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		tenantSvc, rdb, bus, clk,
 	)
 
+	tenantDB := tenantdb.NewTenantDB(pool)
+
+	// Audit: tenant lookup via tenancy service
+	auditSvc := audit.NewService(tenantDB,
+		func(c context.Context, id kernel.ID) (string, bool) {
+			t, _ := tenantSvc.GetTenant(c, id)
+			if t == nil {
+				return "", false
+			}
+			return t.SchemaName, true
+		}, logger)
+	auditSvc.Subscribe(bus, []string{
+		"tenancy.tenant_created", "tenancy.tenant_suspended", "tenancy.tenant_resumed",
+		"tenancy.tenant_closed", "tenancy.member_joined",
+		"iam.user_logged_in", "iam.user_logged_out", "iam.login_failed",
+		"okr.plan_created", "okr.plan_item_completed", "okr.plan_closed",
+		"okr.daily_submitted", "okr.weekly_submitted",
+	})
+
+	// Notification: subscribes to selected events
+	notifSvc := notification.NewService(tenantDB, logger, clk)
+	notifSvc.Wire(bus)
+
+	// FileStorage (MinIO).  Best-effort init — if MinIO unreachable in dev, leave nil.
+	var fsSvc *filestorage.Service
+	fsSvc, fsErr := filestorage.NewService(ctx, tenantDB, filestorage.Config{
+		Endpoint:  cfg.MinIO.Endpoint,
+		AccessKey: cfg.MinIO.AccessKey,
+		SecretKey: cfg.MinIO.SecretKey,
+	}, clk)
+	if fsErr != nil {
+		logger.Warn("filestorage unavailable, file routes will return 503", zap.Error(fsErr))
+		fsSvc = nil
+	}
+
 	a := &App{
-		Cfg:        cfg,
-		Logger:     logger,
-		Pool:       pool,
-		RDB:        rdb,
-		Platform:   tenantdb.NewPlatformDB(pool),
-		Tenant:     tenantdb.NewTenantDB(pool),
-		Bus:        bus,
-		Health:     healthReg,
-		Dictionary: dictSvc,
-		I18n:       i18n,
-		Tenancy:    tenantSvc,
-		IAM:        iamSvc,
+		Cfg:         cfg,
+		Logger:      logger,
+		Pool:        pool,
+		RDB:         rdb,
+		Platform:    tenantdb.NewPlatformDB(pool),
+		Tenant:      tenantDB,
+		Bus:         bus,
+		Health:      healthReg,
+		Dictionary:  dictSvc,
+		I18n:        i18n,
+		Tenancy:     tenantSvc,
+		IAM:         iamSvc,
+		Audit:       auditSvc,
+		Notif:       notifSvc,
+		FileStorage: fsSvc,
 	}
 
 	cleanup := func() {
+		_ = auditSvc.Close()
 		_ = bus.Close()
 		pool.Close()
 		if rdb != nil {
@@ -154,5 +199,15 @@ func (a *App) Engine() *gin.Engine {
 	dictionary.RegisterRoutes(api, a.Dictionary)
 	iam.RegisterRoutes(api, a.IAM, a.Tenancy)
 	tenancy.RegisterRoutes(api, a.Tenancy, a.Pool)
+
+	// Authenticated tenant-scoped group
+	authT := api.Group("")
+	authT.Use(iam.JWTAuth(a.IAM))
+	authT.Use(iam.TenantLoader(a.Tenancy))
+	audit.RegisterRoutes(authT, a.Audit)
+	notification.RegisterRoutes(authT, a.Notif)
+	if a.FileStorage != nil {
+		filestorage.RegisterRoutes(authT, a.FileStorage)
+	}
 	return r
 }
