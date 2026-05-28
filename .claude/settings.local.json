@@ -9,7 +9,9 @@
       "Bash(npm --version)",
       "Bash(docker --version)",
       "Bash(brew install *)",
-      "Bash(go version *)"
+      "Bash(go version *)",
+      "Bash(go get *)",
+      "Bash(make build *)"
     ]
   }
 }

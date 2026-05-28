@@ -1,0 +1,103 @@
+openapi: 3.0.3
+info:
+  title: IOP API
+  version: "0.1.0"
+  description: |
+    IOP 多租户 B 端基座 API. M1: 仅基础设施端点。
+    M2 起加 Tenancy/IAM, M4 加 OKR.
+
+servers:
+  - url: http://localhost:8080
+    description: Local dev
+
+paths:
+  /livez:
+    get:
+      summary: Liveness probe
+      tags: [system]
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: live }
+
+  /readyz:
+    get:
+      summary: Readiness probe (main path dependencies)
+      tags: [system]
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready: { type: boolean }
+                  live: { type: boolean }
+        "503":
+          description: Critical dependency down
+
+  /healthz:
+    get:
+      summary: Detailed dependency status (internal use)
+      tags: [system]
+      responses:
+        "200":
+          description: Status of all registered checks
+
+  /version:
+    get:
+      summary: Build version
+      tags: [system]
+      responses:
+        "200":
+          description: Version string
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      tags: [system]
+      responses:
+        "200":
+          description: Prometheus exposition format
+
+  /api/dict/{typeCode}:
+    get:
+      summary: Lookup dictionary items
+      tags: [dictionary]
+      parameters:
+        - name: typeCode
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Items list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          description: Type not found
+
+components:
+  schemas:
+    Envelope:
+      type: object
+      required: [code, trace_id]
+      properties:
+        code: { type: integer, example: 0 }
+        data: { type: object, nullable: true }
+        error:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            kind: { type: string }
+        trace_id: { type: string }
