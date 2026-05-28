@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:api.anthropic.com)",
+      "Bash(git init *)",
+      "Bash(git config *)",
+      "Bash(mkdir -p server)",
+      "Bash(go mod *)",
+      "Bash(npm --version)",
+      "Bash(docker --version)",
+      "Bash(brew install *)",
+      "Bash(go version *)"
+    ]
+  }
+}

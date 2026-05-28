@@ -1,0 +1,27 @@
+# Binaries
+/server/bin/
+*.test
+*.out
+coverage.html
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Env / secrets
+.env
+.env.local
+server/configs/local.yaml
+
+# OS
+.DS_Store
+
+# Node
+node_modules/
+web/dist/
+web.bak/
+
+# Backup
+*.bak
