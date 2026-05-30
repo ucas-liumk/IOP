@@ -82,6 +82,9 @@ const router = createRouter({
             { path: "apps",          name: "admin.apps",          component: () => import("@/modules/admin/views/AppsView.vue") },
             { path: "audit",         name: "admin.audit",         component: () => import("@/modules/admin/views/AuditView.vue") },
             { path: "dict",          name: "admin.dict",          component: () => import("@/modules/admin/views/DictView.vue") },
+            { path: "notices",       name: "admin.notices",       component: () => import("@/modules/admin/views/NoticeView.vue") },
+            { path: "logs",          name: "admin.logs",          component: () => import("@/modules/admin/views/LogsView.vue") },
+            { path: "online",        name: "admin.online",        component: () => import("@/modules/admin/views/OnlineUsersView.vue") },
             // Platform-level pages moved to the Platform Console (/platform/*).
             { path: "users",            redirect: "/platform/users" },
             { path: "organizations",    redirect: "/platform/organizations" },

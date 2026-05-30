@@ -241,6 +241,92 @@ export async function clearDictOverride(typeCode: string, code: string) {
   await client.delete(`/admin/dict/${typeCode}/items/${code}/override`);
 }
 
+// === Notices (通知公告) ===
+export interface Notice {
+  id: string;
+  title: string;
+  content: string;
+  type: string;       // "notice" | "announcement" | ...
+  status: string;     // "draft" | "published"
+  created_by?: string | null;
+  created_at: string;
+}
+export type NoticeStatus = "draft" | "published" | "";
+export async function listNotices(status: NoticeStatus = "", page = 1, pageSize = 50): Promise<Notice[]> {
+  const params: Record<string, string | number> = { page, page_size: pageSize };
+  if (status) params.status = status;
+  const r = await client.get("/admin/notices", { params });
+  return r.data?.data?.notices ?? [];
+}
+export async function createNotice(payload: { title: string; content?: string; type?: string }): Promise<Notice> {
+  const r = await client.post("/admin/notices", payload);
+  return r.data?.data as Notice;
+}
+export async function updateNotice(id: string, patch: { title?: string; content?: string; type?: string }) {
+  await client.patch(`/admin/notices/${id}`, patch);
+}
+export async function deleteNotice(id: string) {
+  await client.delete(`/admin/notices/${id}`);
+}
+export async function publishNotice(id: string) {
+  await client.post(`/admin/notices/${id}/publish`);
+}
+export async function withdrawNotice(id: string) {
+  await client.post(`/admin/notices/${id}/withdraw`);
+}
+
+// === Logs (操作日志 / 登录日志) ===
+// Both endpoints return the tenant audit_log shape (AuditEntry). They are paged
+// (page / page_size) and return a bare array — there is no total count, so the
+// UI infers "has next page" from a full page.
+export interface LogFilter {
+  actor?: string;
+  action?: string;
+  from?: string;   // YYYY-MM-DD
+  to?: string;     // YYYY-MM-DD
+  page?: number;
+  pageSize?: number;
+}
+function logParams(f: LogFilter): Record<string, string | number> {
+  const p: Record<string, string | number> = {
+    page: f.page ?? 1,
+    page_size: f.pageSize ?? 20,
+  };
+  if (f.actor) p.actor = f.actor;
+  if (f.action) p.action = f.action;
+  if (f.from) p.from = f.from;
+  if (f.to) p.to = f.to;
+  return p;
+}
+export async function listOperLogs(f: LogFilter = {}): Promise<AuditEntry[]> {
+  const r = await client.get("/admin/operlogs", { params: logParams(f) });
+  return r.data?.data?.entries ?? [];
+}
+export async function listLoginLogs(f: LogFilter = {}): Promise<AuditEntry[]> {
+  // The login-log endpoint ignores `action` (it's pinned to login topics).
+  const { action, ...rest } = f;
+  void action;
+  const r = await client.get("/admin/loginlogs", { params: logParams(rest) });
+  return r.data?.data?.entries ?? [];
+}
+
+// === Online users (在线用户) ===
+export interface OnlineSession {
+  session_id: string;
+  member_id?: string;
+  display_name: string;
+  ip_address?: string;
+  issued_at: string;
+  expires_at: string;
+}
+export async function listOnlineSessions(): Promise<OnlineSession[]> {
+  const r = await client.get("/admin/online");
+  return r.data?.data?.sessions ?? [];
+}
+export async function kickSession(sid: string) {
+  await client.post(`/admin/online/${sid}/kick`);
+}
+
 // Personal
 export async function changePassword(oldPw: string, newPw: string) {
   await client.post("/me/password", { old: oldPw, new: newPw });
