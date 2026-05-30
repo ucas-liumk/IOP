@@ -4,7 +4,7 @@
       <template #actions>
         <div class="head-actions">
           <button class="btn btn-ghost" @click="reload">刷新</button>
-          <button class="btn btn-primary" @click="openCreate">+ 新建组织</button>
+          <button class="btn btn-primary" v-perm="'org:write'" @click="openCreate">+ 新建组织</button>
         </div>
       </template>
     </PageHeader>
@@ -37,8 +37,8 @@
       </template>
       <template #cell-actions="{ row }">
         <div class="row-actions">
-          <button v-if="row.status === 'active'" class="btn btn-ghost btn-sm danger" @click="suspend(row)">暂停</button>
-          <button v-else-if="row.status === 'suspended'" class="btn btn-ghost btn-sm" @click="resume(row)">恢复</button>
+          <button v-if="row.status === 'active'" v-perm="'org:write'" class="btn btn-ghost btn-sm danger" @click="suspend(row)">暂停</button>
+          <button v-else-if="row.status === 'suspended'" v-perm="'org:write'" class="btn btn-ghost btn-sm" @click="resume(row)">恢复</button>
           <span v-else class="muted">—</span>
         </div>
       </template>

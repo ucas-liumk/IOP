@@ -24,11 +24,38 @@
     </div>
 
     <article class="card">
+      <h3 class="card-title">快捷入口</h3>
+      <div class="quick-grid">
+        <RouterLink class="quick" to="/platform/organizations">
+          <span class="q-title">组织管理</span>
+          <span class="q-sub">开通 / 暂停 / 恢复组织</span>
+        </RouterLink>
+        <RouterLink class="quick" to="/platform/users">
+          <span class="q-title">全局用户</span>
+          <span class="q-sub">跨组织用户 / 重置密码</span>
+        </RouterLink>
+        <RouterLink class="quick" to="/platform/registrations">
+          <span class="q-title">注册申请</span>
+          <span class="q-sub">审批全平台入驻申请</span>
+        </RouterLink>
+        <RouterLink class="quick" to="/platform/rbac">
+          <span class="q-title">平台角色</span>
+          <span class="q-sub">菜单权限 + 成员</span>
+        </RouterLink>
+        <RouterLink class="quick" to="/platform/menus">
+          <span class="q-title">菜单目录</span>
+          <span class="q-sub">全平台菜单 / 权限巡检</span>
+        </RouterLink>
+      </div>
+    </article>
+
+    <article class="card">
       <h3 class="card-title">平台管理员能做什么</h3>
       <ul class="role-list">
         <li><strong>组织机构</strong>：开通 / 暂停 / 关闭所有组织（租户），数据物理隔离</li>
         <li><strong>全局用户</strong>：跨组织创建 / 停用 / 重置密码，并指派为某组织的成员或管理员</li>
         <li><strong>注册申请</strong>：审批全平台的入驻申请（任意目标组织）</li>
+        <li><strong>平台角色 / 菜单目录</strong>：配置平台侧角色权限，巡检两套控制台的菜单 / 权限目录</li>
         <li class="muted">组织<strong>内部</strong>的成员 / 角色 / 部门 / 设置由各组织的<strong>组织管理员</strong>自治；平台管理员不直接介入</li>
       </ul>
     </article>
@@ -60,6 +87,16 @@ onMounted(async () => {
 .stat-value { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.1; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; box-shadow: var(--sh-1); }
 .card-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.quick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.quick {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); text-decoration: none; transition: all .15s;
+}
+.quick:hover { border-color: var(--primary); background: var(--primary-soft); transform: translateY(-1px); }
+.q-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.quick:hover .q-title { color: var(--primary); }
+.q-sub { font-size: 11.5px; color: var(--text-3); }
 .role-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; font-size: 13px; color: var(--text-2); line-height: 1.6; }
 .role-list .muted { color: var(--text-3); }
 </style>

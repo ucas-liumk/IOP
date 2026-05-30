@@ -5,7 +5,7 @@
         <div class="head-actions">
           <input class="input search" v-model="search" placeholder="搜索用户名 / 手机 / 邮箱" @keyup.enter="refresh" />
           <button class="btn btn-ghost" @click="refresh">刷新</button>
-          <button class="btn btn-primary" @click="openCreate">+ 新建用户</button>
+          <button class="btn btn-primary" v-perm="'user:write'" @click="openCreate">+ 新建用户</button>
         </div>
       </template>
     </PageHeader>
@@ -41,9 +41,9 @@
       </template>
       <template #cell-actions="{ row }">
         <div class="row-actions">
-          <button class="btn btn-ghost btn-sm" @click="openReset(row)">重置密码</button>
-          <button v-if="row.status === 'active'" class="btn btn-ghost btn-sm danger" @click="toggleStatus(row)">停用</button>
-          <button v-else class="btn btn-ghost btn-sm" @click="toggleStatus(row)">启用</button>
+          <button class="btn btn-ghost btn-sm" v-perm="'user:write'" @click="openReset(row)">重置密码</button>
+          <button v-if="row.status === 'active'" v-perm="'user:write'" class="btn btn-ghost btn-sm danger" @click="toggleStatus(row)">停用</button>
+          <button v-else v-perm="'user:write'" class="btn btn-ghost btn-sm" @click="toggleStatus(row)">启用</button>
         </div>
       </template>
     </DataTable>

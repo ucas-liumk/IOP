@@ -1,191 +1,217 @@
 <template>
-  <section class="rbac">
-    <div v-if="pageError" class="page-error">{{ pageError }}</div>
-    <PageHeader title="权限管理" sub="平台角色 · 用户 → 角色 →（菜单权限 + 数据范围）">
+  <section class="admin-page">
+    <PageHeader title="平台角色" :sub="`共 ${roles.length} 个角色 · 菜单权限 + 成员（无数据范围）`">
       <template #actions>
-        <div class="head-actions">
-          <button class="btn btn-primary" @click="showCreate = !showCreate">+ 新建角色</button>
-        </div>
+        <button class="btn btn-ghost" @click="reload">刷新</button>
+        <button class="btn btn-primary" v-perm="'role:manage'" @click="openCreate">+ 新建角色</button>
       </template>
     </PageHeader>
 
-    <form v-if="showCreate" class="card create-form" @submit.prevent="create">
-      <input class="input" v-model="newRole.code" required pattern="[a-z][a-z0-9_-]*" placeholder="编码，如 ops_admin" />
-      <input class="input" v-model="newRole.name" required placeholder="显示名称" />
-      <button class="btn btn-primary" :disabled="saving">创建</button>
-      <button class="btn" type="button" @click="showCreate = false">取消</button>
-    </form>
+    <div v-if="pageError" class="page-error">
+      {{ pageError }}
+      <button class="page-error-close" @click="pageError = ''">×</button>
+    </div>
 
-    <div class="roles-grid">
-      <article v-for="r in roles" :key="r.id" class="role-card">
-        <div class="role-head">
-          <div class="role-title">
-            {{ r.name }} <span class="role-code">{{ r.code }}</span>
-            <span v-if="r.built_in" class="tag-builtin">内置</span>
-          </div>
-          <button v-if="!r.built_in" class="link-btn warn" @click="del(r.id)">删除</button>
-        </div>
-        <div class="role-meta">{{ r.member_count }} 名成员</div>
-        <div class="policies">
-          <span v-if="r.code === 'super_admin'" class="no-pol">★ 全权</span>
-          <span v-else-if="!r.policies?.length" class="no-pol">尚无权限</span>
-          <span v-for="p in (r.policies ?? [])" :key="`${p.resource}:${p.action}`" class="pol-chip">
-            {{ p.resource }}<span class="sep">/</span>{{ p.action }}
-            <button v-if="!r.built_in" class="rm" @click="removePol(r.id, p.resource, p.action)">×</button>
-          </span>
-        </div>
-        <div v-if="!r.built_in" class="add-pol-row">
-          <select class="input input-sm" v-model="newPol[r.id].key">
-            <option value="">添加权限点…</option>
-            <optgroup v-for="(list, dom) in byDomain" :key="dom" :label="dom">
-              <option v-for="p in list" :key="`${p.resource}/${p.action}`" :value="`${p.resource}/${p.action}`">
-                {{ p.label }} ({{ p.resource }}/{{ p.action }}){{ p.is_high_risk ? ' ⚠' : '' }}
-              </option>
-            </optgroup>
-          </select>
-          <button class="btn btn-sm" @click="addPol(r.id)" :disabled="!newPol[r.id].key">+ 加</button>
-        </div>
-
-        <div class="members">
-          <div class="members-head">成员 · {{ r.members?.length || 0 }}</div>
-          <div class="member-chips">
-            <span v-for="uid in (r.members ?? [])" :key="uid" class="member-chip">
-              {{ userName(uid) }}
-              <button class="rm" @click="revokeMember(r, uid)">×</button>
-            </span>
-            <span v-if="!r.members?.length" class="no-pol">尚无成员</span>
-          </div>
-          <div class="add-member-row">
-            <select class="input input-sm" v-model="newMember[r.id]">
-              <option value="">添加成员…</option>
-              <option v-for="u in assignableUsers(r)" :key="u.id" :value="u.id">{{ u.username }}</option>
-            </select>
-            <button class="btn btn-sm" @click="addMember(r)" :disabled="!newMember[r.id]">+ 加</button>
-          </div>
-        </div>
+    <div class="split">
+      <!-- Role list -->
+      <article class="card list-pane">
+        <div class="pane-head">角色列表</div>
+        <ul class="role-list">
+          <li
+            v-for="r in roles"
+            :key="r.id"
+            class="role-item"
+            :class="{ active: r.id === selectedId }"
+            @click="select(r.id)"
+          >
+            <div class="ri-main">
+              <span class="ri-name">{{ r.name }}</span>
+              <code class="ri-code">{{ r.code }}</code>
+            </div>
+            <div class="ri-meta">
+              <span v-if="r.built_in" class="tag-builtin">内置</span>
+              <span class="ri-count">{{ r.member_count }} 人</span>
+            </div>
+          </li>
+          <li v-if="roles.length === 0" class="muted">尚无角色</li>
+        </ul>
       </article>
+
+      <!-- Editor -->
+      <article class="card editor-pane">
+        <EmptyState v-if="!selectedRole" title="选择一个角色" sub="从左侧选择平台角色编辑其菜单权限与成员。" icon="◷" />
+        <template v-else>
+          <PlatformRoleEditor
+            :key="selectedRole.id"
+            :role="selectedRole"
+            :menus="menus"
+            :users="users"
+            @changed="reload"
+          />
+          <div v-if="!selectedRole.built_in" class="danger-zone">
+            <button class="btn btn-ghost btn-sm danger" v-perm="'role:manage'" @click="removeRole">删除该角色</button>
+          </div>
+        </template>
+      </article>
+    </div>
+
+    <!-- Create modal -->
+    <div v-if="creating" class="modal-overlay" @click.self="creating = false">
+      <div class="modal">
+        <h3>新建平台角色</h3>
+        <label class="field">
+          <span class="label">编码 (唯一) *</span>
+          <input class="input" v-model="form.code" pattern="[a-z][a-z0-9_-]*" placeholder="例如：ops_admin" />
+          <span class="hint">小写字母开头，可含数字 / - / _</span>
+        </label>
+        <label class="field">
+          <span class="label">显示名称 *</span>
+          <input class="input" v-model="form.name" placeholder="例如：运维管理员" />
+        </label>
+        <div v-if="formError" class="form-error">{{ formError }}</div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="creating = false">取消</button>
+          <button class="btn btn-primary" :disabled="busy" @click="create">创建</button>
+        </div>
+      </div>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { PageHeader } from "@/shell/components";
+import { PageHeader, EmptyState } from "@/shell/components";
+import PlatformRoleEditor from "../components/PlatformRoleEditor.vue";
 import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
 import {
-  getRbacMe, listPlatformRoles, listPlatformPermissions, createPlatformRole,
-  deletePlatformRole, addPlatformPolicy, removePlatformPolicy,
-  grantPlatformRole, revokePlatformRole,
-  type PlatformRole, type PlatformPermission, type RbacMe,
+  listPlatformRoles, createPlatformRole, deletePlatformRole,
+  type PlatformRole,
 } from "../api/rbac";
+import { getPlatformMenuTree, type MenuTreeNode } from "../api/menus";
 import { listPlatformUsers, type PlatformUser } from "@/modules/admin/api/admin";
 
 const notify = useNotification();
 const { confirm } = useConfirm();
 
 const roles = ref<PlatformRole[]>([]);
-const perms = ref<PlatformPermission[]>([]);
-const me = ref<RbacMe>({ roles: [], permissions: [], is_super_admin: false });
+const menus = ref<MenuTreeNode[]>([]);
 const users = ref<PlatformUser[]>([]);
-const showCreate = ref(false);
-const saving = ref(false);
-const newRole = reactive({ code: "", name: "" });
-const newPol = reactive<Record<string, { key: string }>>({});
-const newMember = reactive<Record<string, string>>({});
+const selectedId = ref<string | null>(null);
 const pageError = ref("");
 
-const byDomain = computed(() => {
-  const m: Record<string, PlatformPermission[]> = {};
-  for (const p of perms.value) (m[p.domain] ??= []).push(p);
-  return m;
-});
-const userMap = computed(() => Object.fromEntries(users.value.map((u) => [u.id, u.username || u.id])));
-function userName(uid: string) { return userMap.value[uid] ?? uid; }
-function assignableUsers(r: PlatformRole) {
-  const have = new Set(r.members ?? []);
-  return users.value.filter((u) => !have.has(u.id));
-}
+const selectedRole = computed(() => roles.value.find((r) => r.id === selectedId.value) ?? null);
 
-onMounted(reload);
+const creating = ref(false);
+const busy = ref(false);
+const formError = ref("");
+const form = reactive({ code: "", name: "" });
+
+onMounted(async () => {
+  [menus.value, users.value] = await Promise.all([
+    getPlatformMenuTree().catch(() => []),
+    listPlatformUsers("").catch(() => []),
+  ]);
+  await reload();
+});
 
 async function reload() {
   try {
-    me.value = await getRbacMe();
     roles.value = await listPlatformRoles();
     pageError.value = "";
   } catch (e: any) {
     pageError.value = e.response?.data?.error?.message ?? "加载失败，请检查权限或重试";
     return;
   }
-  roles.value.forEach((r) => { newPol[r.id] ??= { key: "" }; if (!(r.id in newMember)) newMember[r.id] = ""; });
-  try { perms.value = await listPlatformPermissions(); } catch {}
-  try { users.value = await listPlatformUsers(""); } catch {}
+  if (selectedId.value && !roles.value.some((r) => r.id === selectedId.value)) {
+    selectedId.value = null;
+  } else if (!selectedId.value && roles.value.length > 0) {
+    selectedId.value = roles.value[0].id;
+  }
+}
+
+function select(id: string) { selectedId.value = id; }
+
+function openCreate() {
+  creating.value = true;
+  formError.value = "";
+  form.code = ""; form.name = "";
 }
 
 async function create() {
-  saving.value = true;
+  if (!form.code.trim() || !form.name.trim()) { formError.value = "编码与名称不能为空"; return; }
+  busy.value = true; formError.value = "";
   try {
-    await createPlatformRole(newRole.code, newRole.name);
-    newRole.code = ""; newRole.name = ""; showCreate.value = false;
+    await createPlatformRole(form.code.trim(), form.name.trim());
+    creating.value = false;
     await reload();
-  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "创建失败"); }
-  finally { saving.value = false; }
+    const created = roles.value.find((r) => r.code === form.code.trim());
+    if (created) selectedId.value = created.id;
+    notify.success("角色已创建");
+  } catch (e: any) {
+    formError.value = e.response?.data?.error?.message ?? "创建失败";
+  } finally { busy.value = false; }
 }
-async function del(id: string) {
-  if (!(await confirm({ title: "确认", message: "确定删除该角色？", danger: true }))) return;
-  try { await deletePlatformRole(id); await reload(); }
-  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "删除失败"); }
-}
-async function addPol(id: string) {
-  const key = newPol[id].key;
-  if (!key) return;
-  const [resource, action] = key.split("/");
-  try { await addPlatformPolicy(id, resource, action); newPol[id].key = ""; await reload(); }
-  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "添加失败"); }
-}
-async function removePol(id: string, resource: string, action: string) {
-  if (!(await confirm({ title: "移除权限", message: "确认移除该权限点？", danger: true }))) return;
-  try { await removePlatformPolicy(id, resource, action); await reload(); }
-  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "移除失败"); }
-}
-async function addMember(r: PlatformRole) {
-  const uid = newMember[r.id];
-  if (!uid) return;
-  try { await grantPlatformRole(r.id, uid); newMember[r.id] = ""; await reload(); }
-  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "添加成员失败"); }
-}
-async function revokeMember(r: PlatformRole, uid: string) {
-  if (!(await confirm({ title: "移除成员", message: "确认移除该成员？", danger: true }))) return;
-  try { await revokePlatformRole(r.id, uid); await reload(); }
-  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "移除失败"); }
+
+async function removeRole() {
+  if (!selectedRole.value) return;
+  const ok = await confirm({ title: "删除角色", message: `确认删除角色「${selectedRole.value.name}」？`, danger: true });
+  if (!ok) return;
+  try {
+    await deletePlatformRole(selectedRole.value.id);
+    selectedId.value = null;
+    await reload();
+    notify.success("角色已删除");
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "删除失败");
+  }
 }
 </script>
 
 <style scoped>
-.rbac { display: flex; flex-direction: column; gap: var(--sp-5); }
-.page-error { background: var(--danger-soft, #fde8e8); color: var(--danger); border: 1px solid var(--danger); border-radius: 8px; padding: 10px 14px; font-size: 13px; }
-.head-actions { display: flex; gap: 8px; }
-.create-form { display: flex; gap: 10px; align-items: center; padding: 14px 16px; }
-.roles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-.role-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: var(--sh-1); }
-.role-head { display: flex; justify-content: space-between; align-items: center; }
-.role-title { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.role-code { font-size: 11px; color: var(--text-3); background: var(--surface-2); border-radius: 4px; padding: 1px 6px; font-family: var(--ff-mono); }
-.tag-builtin { font-size: 10px; color: var(--primary); background: var(--primary-soft); border-radius: 3px; padding: 1px 5px; }
-.role-meta { font-size: 12px; color: var(--text-3); margin: 4px 0 10px; }
-.policies { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }
-.pol-chip { font-size: 11.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 3px; }
-.pol-chip .sep { color: var(--text-4); }
-.pol-chip .rm { border: 0; background: none; color: var(--text-3); cursor: pointer; }
-.no-pol { font-size: 12px; color: var(--text-3); }
-.add-pol-row { display: flex; gap: 8px; margin-top: 12px; }
-.input-sm { font-size: 12px; padding: 4px 8px; }
-.link-btn.warn { color: var(--danger); background: none; border: 0; cursor: pointer; font-size: 12px; }
-.members { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
-.members-head { font-size: 11px; color: var(--text-3); margin-bottom: 6px; }
-.member-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; }
-.member-chip { font-size: 11.5px; background: var(--primary-soft); color: var(--primary); border-radius: 5px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 3px; }
-.member-chip .rm { border: 0; background: none; color: var(--primary); cursor: pointer; }
-.add-member-row { display: flex; gap: 8px; margin-top: 8px; }
+.admin-page { display: flex; flex-direction: column; gap: var(--sp-5); }
+.page-error {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--danger-soft); color: var(--danger);
+  font-size: 13px; padding: 10px 14px; border-radius: 8px;
+}
+.page-error-close { border: 0; background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
+.split { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.list-pane { padding: 12px; }
+.pane-head { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; padding: 4px 8px 8px; }
+.role-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.role-item { display: flex; justify-content: space-between; align-items: center; padding: 9px 10px; border-radius: 7px; cursor: pointer; }
+.role-item:hover { background: var(--surface-2); }
+.role-item.active { background: var(--primary-soft); }
+.ri-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ri-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.role-item.active .ri-name { color: var(--primary); }
+.ri-code { font-family: var(--ff-mono); font-size: 11px; color: var(--text-3); }
+.ri-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ri-count { font-size: 11px; color: var(--text-3); }
+.tag-builtin { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--purple-soft); color: var(--purple); border-radius: 3px; }
+.muted { color: var(--text-4); font-size: 12.5px; padding: 8px; }
+
+.editor-pane { padding: 20px 22px; min-height: 360px; }
+.danger-zone { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn:hover { background: var(--bg); }
+.btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-sm.danger, .danger { color: var(--danger); }
+.btn-sm.danger:hover { background: var(--danger-soft); }
+
+.modal-overlay { position: fixed; inset: 0; background: rgba(13,27,46,.45); display: grid; place-items: center; z-index: 100; backdrop-filter: blur(3px); }
+.modal { background: var(--surface); border-radius: 14px; padding: 22px; width: min(420px, 92vw); box-shadow: var(--sh-4); display: flex; flex-direction: column; gap: 12px; }
+.modal h3 { font-size: 16px; font-weight: 600; margin: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.label { font-size: 12px; color: var(--text-2); }
+.hint { font-size: 11px; color: var(--text-4); }
+.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); }
+.input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.form-error { font-size: 12.5px; color: var(--danger); background: var(--danger-soft); padding: 8px 10px; border-radius: 6px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 </style>
