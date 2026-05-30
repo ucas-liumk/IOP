@@ -328,6 +328,7 @@ func (a *App) Engine() *gin.Engine {
 	admin.Use(iam.TenantAdminRequired(a.IAM))
 	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool)
 	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool)
+	audit.RegisterAdminRoutes(admin, a.Audit)
 	dictionary.RegisterAdminRoutes(admin, dictionary.AdminConfig{
 		Memory:   a.DictMemory,
 		TenantDB: a.Tenant,

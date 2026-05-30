@@ -194,4 +194,5 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 
 	registerDeptRoutes(r, svc, pool)
 	registerPostRoutes(r, svc, pool)
+	registerNoticeRoutes(r, svc, pool)
 }

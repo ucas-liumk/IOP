@@ -51,31 +51,47 @@ func builtinMenus() []module.MenuNode {
 			Type: "menu", Console: "tenant", Perm: "registration:read", Order: 15,
 			Icon: "M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M20 8v6M23 11h-6",
 		},
-		// 系统管理
+		// 内容与日志
 		{
-			Key: "admin.system", Title: "系统管理", Type: "dir",
+			Key: "admin.content", Title: "内容与日志", Type: "dir",
 			Console: "tenant", Order: 20,
+			Icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
+		},
+		{
+			Key: "admin.notices", Title: "通知公告", Path: "/admin/notices", Parent: "admin.content",
+			Type: "menu", Console: "tenant", Perm: "notice:read", Order: 21,
+			Icon: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0",
+		},
+		{
+			Key: "admin.logs", Title: "操作/登录日志", Path: "/admin/logs", Parent: "admin.content",
+			Type: "menu", Console: "tenant", Perm: "log:read", Order: 22,
+			Icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 13h6M9 17h6",
+		},
+		{
+			Key: "admin.online", Title: "在线用户", Path: "/admin/online", Parent: "admin.content",
+			Type: "menu", Console: "tenant", Perm: "online:read", Order: 23,
+			Icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 0 0M22 12l-3 3-1.5-1.5",
+		},
+		// 系统
+		{
+			Key: "admin.system", Title: "系统", Type: "dir",
+			Console: "tenant", Order: 30,
+			Icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+		},
+		{
+			Key: "admin.dict", Title: "字典管理", Path: "/admin/dict", Parent: "admin.system",
+			Type: "menu", Console: "tenant", Perm: "dict:read", Order: 31,
+			Icon: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
+		},
+		{
+			Key: "admin.settings", Title: "租户设置", Path: "/admin/settings", Parent: "admin.system",
+			Type: "menu", Console: "tenant", Perm: "settings:read", Order: 32,
 			Icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
 		},
 		{
 			Key: "admin.apps", Title: "应用管理", Path: "/admin/apps", Parent: "admin.system",
-			Type: "menu", Console: "tenant", Perm: "app:read", Order: 21,
+			Type: "menu", Console: "tenant", Perm: "app:read", Order: 33,
 			Icon: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
-		},
-		{
-			Key: "admin.dict", Title: "字典管理", Path: "/admin/dict", Parent: "admin.system",
-			Type: "menu", Console: "tenant", Perm: "dict:read", Order: 22,
-			Icon: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
-		},
-		{
-			Key: "admin.audit", Title: "审计日志", Path: "/admin/audit", Parent: "admin.system",
-			Type: "menu", Console: "tenant", Perm: "audit:read", Order: 23,
-			Icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 13h6",
-		},
-		{
-			Key: "admin.settings", Title: "租户设置", Path: "/admin/settings", Parent: "admin.system",
-			Type: "menu", Console: "tenant", Perm: "settings:read", Order: 24,
-			Icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
 		},
 
 		// ===== Platform console (/platform/*) =====

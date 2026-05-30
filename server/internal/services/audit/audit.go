@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
@@ -173,13 +174,69 @@ func (s *Service) Close() error {
 
 // ListByTenant queries audit log for current tenant ctx.
 func (s *Service) ListByTenant(ctx context.Context, p kernel.Pagination) ([]Entry, error) {
+	return s.ListByTenantFiltered(ctx, p, ListFilter{})
+}
+
+// ListFilter narrows an audit_log query. All fields are optional.
+//   - Actor: exact actor match.
+//   - ActionPrefix: action starts with this string (e.g. "iam." for login logs).
+//   - ActionLike: action ILIKE pattern (caller supplies % wildcards). Used to
+//     match the family of login event topics.
+//   - From / To: occurred_at window (RFC3339 / 'YYYY-MM-DD ...' strings as the
+//     DB parses them; passed straight to a timestamptz comparison).
+type ListFilter struct {
+	Actor        string
+	Action       string
+	ActionPrefix string
+	ActionLike   string
+	From         string
+	To           string
+}
+
+// ListByTenantFiltered queries the current tenant's audit_log with optional
+// actor/action/time filters, newest first, paginated.
+func (s *Service) ListByTenantFiltered(ctx context.Context, p kernel.Pagination, f ListFilter) ([]Entry, error) {
 	p = p.Normalize()
-	var out []Entry
+	out := []Entry{}
 	err := s.tenant.Transaction(ctx, func(tx pgx.Tx) error {
+		args := []any{p.PageSize, p.Offset()}
+		where := ""
+		idx := 3
+		if f.Actor != "" {
+			where += " AND actor = $" + strconv.Itoa(idx)
+			args = append(args, f.Actor)
+			idx++
+		}
+		if f.Action != "" {
+			where += " AND action = $" + strconv.Itoa(idx)
+			args = append(args, f.Action)
+			idx++
+		}
+		if f.ActionPrefix != "" {
+			where += " AND action LIKE $" + strconv.Itoa(idx)
+			args = append(args, f.ActionPrefix+"%")
+			idx++
+		}
+		if f.ActionLike != "" {
+			where += " AND action ILIKE $" + strconv.Itoa(idx)
+			args = append(args, f.ActionLike)
+			idx++
+		}
+		if f.From != "" {
+			where += " AND occurred_at >= $" + strconv.Itoa(idx)
+			args = append(args, f.From)
+			idx++
+		}
+		if f.To != "" {
+			where += " AND occurred_at <= $" + strconv.Itoa(idx)
+			args = append(args, f.To)
+			idx++
+		}
 		rows, err := tx.Query(ctx,
 			`SELECT id, occurred_at, actor, action, COALESCE(resource,''), COALESCE(resource_id,''), COALESCE(trace_id,''), detail
-			 FROM audit_log ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`,
-			p.PageSize, p.Offset())
+			 FROM audit_log WHERE 1=1`+where+`
+			 ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`,
+			args...)
 		if err != nil {
 			return err
 		}

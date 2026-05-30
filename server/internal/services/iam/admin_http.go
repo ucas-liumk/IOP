@@ -7,6 +7,7 @@ import (
 	"github.com/leo/iop/server/internal/interface/apiresp"
 	"github.com/leo/iop/server/internal/shared/errors"
 	"github.com/leo/iop/server/internal/shared/kernel"
+	"github.com/leo/iop/server/internal/shared/tenantdb"
 )
 
 // parseIDs converts a slice of string ids into kernel.IDs, failing fast on a bad value.
@@ -478,6 +479,50 @@ func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
 			"is_platform_admin": isPA,
 			"has_tenant":        claims.TenantID != "",
 		})
+	})
+
+	// Online users (在线用户): active sessions bound to the current tenant.
+	r.GET("/admin/online", func(c *gin.Context) {
+		tc, ok := tenantdb.FromContext(c.Request.Context())
+		if !ok || tc.ID == "" {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.no_tenant", "缺少租户上下文"))
+			return
+		}
+		sessions, err := svc.ListOnlineSessions(c.Request.Context(), kernel.ID(tc.ID), tc.SchemaName)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"sessions": sessions})
+	})
+
+	// Kick (force-logout) a session — scoped to the acting admin's tenant so a
+	// tenant admin cannot revoke sessions outside their own organization.
+	r.POST("/admin/online/:sid/kick", func(c *gin.Context) {
+		tc, ok := tenantdb.FromContext(c.Request.Context())
+		if !ok || tc.ID == "" {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.no_tenant", "缺少租户上下文"))
+			return
+		}
+		sid, err := kernel.ParseID(c.Param("sid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_session_id", "会话 ID 无效", err))
+			return
+		}
+		owner, err := svc.GetSessionTenant(c.Request.Context(), sid)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if owner == "" || owner != kernel.ID(tc.ID) {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.session_not_in_tenant", "无权操作该会话"))
+			return
+		}
+		if err := svc.Logout(c.Request.Context(), sid); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
 	})
 }
 

@@ -446,5 +446,102 @@ func (s *Service) ListSessions(ctx context.Context, userID, currentSession kerne
 	return out, rows.Err()
 }
 
+// OnlineSessionRow is one active session for the online-users view.
+type OnlineSessionRow struct {
+	SessionID   kernel.ID `json:"session_id"`
+	MemberID    kernel.ID `json:"member_id,omitempty"`
+	DisplayName string    `json:"display_name"`
+	IPAddress   string    `json:"ip_address,omitempty"`
+	IssuedAt    string    `json:"issued_at"`
+	ExpiresAt   string    `json:"expires_at"`
+}
+
+// ListOnlineSessions returns active (non-revoked, unexpired) sessions for the
+// given tenant, with the member display name resolved from the tenant schema.
+// schemaName is the tenant_<slug> schema for display-name resolution.
+func (s *Service) ListOnlineSessions(ctx context.Context, tenantID kernel.ID, schemaName string) ([]OnlineSessionRow, error) {
+	pool := s.repo.(*pgRepo).pool
+	rows, err := pool.Query(ctx,
+		`SELECT id, member_id,
+		        to_char(issued_at,'YYYY-MM-DD HH24:MI:SS'),
+		        to_char(expires_at,'YYYY-MM-DD HH24:MI:SS'),
+		        COALESCE(host(ip_address),'')
+		 FROM public.session
+		 WHERE tenant_id = $1 AND revoked = FALSE AND expires_at > now()
+		 ORDER BY issued_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OnlineSessionRow{}
+	memberIDs := []kernel.ID{}
+	for rows.Next() {
+		var r OnlineSessionRow
+		var mid *kernel.ID
+		if err := rows.Scan(&r.SessionID, &mid, &r.IssuedAt, &r.ExpiresAt, &r.IPAddress); err != nil {
+			return nil, err
+		}
+		if mid != nil {
+			r.MemberID = *mid
+			memberIDs = append(memberIDs, *mid)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Resolve member display names from the tenant schema in one query.
+	if len(memberIDs) > 0 && schemaName != "" {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer conn.Release()
+		if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %q, public", schemaName)); err != nil {
+			return nil, err
+		}
+		defer conn.Exec(ctx, "RESET search_path") //nolint:errcheck
+		nameRows, err := conn.Query(ctx,
+			`SELECT id, COALESCE(display_name,'') FROM member WHERE id = ANY($1)`, memberIDs)
+		if err != nil {
+			return nil, err
+		}
+		defer nameRows.Close()
+		names := map[kernel.ID]string{}
+		for nameRows.Next() {
+			var id kernel.ID
+			var name string
+			if err := nameRows.Scan(&id, &name); err != nil {
+				return nil, err
+			}
+			names[id] = name
+		}
+		if err := nameRows.Err(); err != nil {
+			return nil, err
+		}
+		for i := range out {
+			if n, ok := names[out[i].MemberID]; ok {
+				out[i].DisplayName = n
+			}
+		}
+	}
+	return out, nil
+}
+
+// GetSessionTenant returns the tenant_id bound to a session (for verifying a
+// kick target belongs to the acting admin's tenant). Returns ("", nil) when the
+// session has no tenant binding or does not exist.
+func (s *Service) GetSessionTenant(ctx context.Context, sessionID kernel.ID) (kernel.ID, error) {
+	sess, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if sess == nil || sess.TenantID == nil {
+		return "", nil
+	}
+	return *sess.TenantID, nil
+}
+
 var _ *pgxpool.Pool
 var _ pgx.Tx
