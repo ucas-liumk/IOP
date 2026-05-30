@@ -1,14 +1,18 @@
 <template>
   <div class="app-layout">
-    <NavBar />
-    <main class="app-main">
-      <router-view />
-    </main>
+    <TopBar />
+    <div class="shell">
+      <LeftRail />
+      <main class="app-main">
+        <router-view />
+      </main>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import NavBar from "./NavBar.vue";
+import TopBar from "./TopBar.vue";
+import LeftRail from "./LeftRail.vue";
 </script>
 
 <style scoped>
@@ -17,11 +21,14 @@ import NavBar from "./NavBar.vue";
   flex-direction: column;
   min-height: 100vh;
 }
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) 1fr;
+  min-height: calc(100vh - 56px);
+}
 .app-main {
-  flex: 1;
-  padding: var(--sp-7) var(--sp-7) var(--sp-9);
-  max-width: 1280px;
-  width: 100%;
-  margin: 0 auto;
+  padding: 22px 28px 40px;
+  min-width: 0;
+  background: var(--bg);
 }
 </style>

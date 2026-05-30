@@ -51,6 +51,17 @@
   --teal: #0fa8a3;
   --teal-soft: #e3f6f5;
 
+  /* App category colors (left rail + market) */
+  --cat-collab:   #1e5fd9;
+  --cat-biz:      #e8920e;
+  --cat-finance:  #1aa971;
+  --cat-hr:       #7c4ddb;
+  --cat-data:     #0fa8a3;
+  --cat-admin:    #6b7891;
+
+  /* Layout — left app rail */
+  --rail-w: 76px;
+
   /* Stage colors */
   --stage-submit: #1e5fd9;
   --stage-review: #0fa8a3;
