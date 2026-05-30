@@ -13,7 +13,6 @@ import (
 	loggerinfra "github.com/leo/iop/server/internal/infrastructure/logger"
 	pginfra "github.com/leo/iop/server/internal/infrastructure/pg"
 	redisinfra "github.com/leo/iop/server/internal/infrastructure/redis"
-	"github.com/leo/iop/server/internal/contexts/crm"
 	"github.com/leo/iop/server/internal/contexts/okr"
 	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
 	iface "github.com/leo/iop/server/internal/interface"
@@ -181,8 +180,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		Clock:    clk,
 	}
 	registry.Register(okr.New(deps))
-	registry.Register(crm.New(deps))
-	// registry.Register(approval.New(deps))
+	// Add future modules here, e.g.:
+	//   registry.Register(crm.New(deps))
+	//   registry.Register(approval.New(deps))
 
 	appStore := appstore.NewService(pool, registry, clk)
 
