@@ -51,6 +51,9 @@ type Repository interface {
 	GrantPlatformRole(ctx context.Context, roleID, platformUserID, grantedBy kernel.ID) error
 	RevokePlatformRole(ctx context.Context, roleID, platformUserID kernel.ID) error
 	ListPlatformRoleMembers(ctx context.Context, roleID kernel.ID) ([]kernel.ID, error)
+	// EnsureSuperAdminGrants grants the super_admin platform role to every platform_user
+	// whose is_platform_admin flag is set but who lacks the grant. Idempotent.
+	EnsureSuperAdminGrants(ctx context.Context) error
 	UpsertPlatformPermission(ctx context.Context, p PlatformPermission) error
 	ListPlatformPermissions(ctx context.Context) ([]*PlatformPermission, error)
 	GetPlatformSetting(ctx context.Context, key string) (string, error)
@@ -448,6 +451,17 @@ func (r *pgRepo) ListPlatformRoleMembers(ctx context.Context, roleID kernel.ID) 
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+func (r *pgRepo) EnsureSuperAdminGrants(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO public.platform_role_grant (role_id, platform_user_id, granted_by)
+		 SELECT r.id, u.id, NULL
+		 FROM public.platform_user u
+		 CROSS JOIN public.role r
+		 WHERE u.is_platform_admin = TRUE AND r.code = 'super_admin' AND r.tenant_id IS NULL
+		 ON CONFLICT (role_id, platform_user_id) DO NOTHING`)
+	return err
 }
 
 func (r *pgRepo) UpsertPlatformPermission(ctx context.Context, p PlatformPermission) error {

@@ -136,6 +136,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	if err := iam.SeedDefaults(ctx, iamSvc, tenantSvc, pool, logger); err != nil {
 		logger.Warn("seed default admin failed", zap.Error(err))
 	}
+	if err := iamSvc.SeedPlatformRBAC(ctx); err != nil {
+		return nil, nil, fmt.Errorf("seed platform rbac: %w", err)
+	}
 
 	// Bring every existing tenant schema up to date with the latest tenant-template
 	// migrations (e.g. new module tables). Idempotent; best-effort on boot.
