@@ -55,8 +55,6 @@ type Repository interface {
 	// EnsureSuperAdminGrants grants the super_admin platform role to every platform_user
 	// whose is_platform_admin flag is set but who lacks the grant. Idempotent.
 	EnsureSuperAdminGrants(ctx context.Context) error
-	UpsertPlatformPermission(ctx context.Context, p PlatformPermission) error
-	ListPlatformPermissions(ctx context.Context) ([]*PlatformPermission, error)
 	GetPlatformSetting(ctx context.Context, key string) (string, error)
 	SetPlatformSetting(ctx context.Context, key, value string, by kernel.ID) error
 }
@@ -478,34 +476,6 @@ func (r *pgRepo) EnsureSuperAdminGrants(ctx context.Context) error {
 		 WHERE u.is_platform_admin = TRUE AND r.code = 'super_admin' AND r.tenant_id IS NULL
 		 ON CONFLICT (role_id, platform_user_id) DO NOTHING`)
 	return err
-}
-
-func (r *pgRepo) UpsertPlatformPermission(ctx context.Context, p PlatformPermission) error {
-	_, err := r.pool.Exec(ctx,
-		`INSERT INTO public.platform_permission (resource, action, domain, label, is_high_risk)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (resource, action) DO UPDATE SET domain = $3, label = $4, is_high_risk = $5`,
-		p.Resource, p.Action, p.Domain, p.Label, p.IsHighRisk)
-	return err
-}
-
-func (r *pgRepo) ListPlatformPermissions(ctx context.Context) ([]*PlatformPermission, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT resource, action, domain, label, is_high_risk FROM public.platform_permission
-		 ORDER BY domain, resource, action`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []*PlatformPermission{}
-	for rows.Next() {
-		var p PlatformPermission
-		if err := rows.Scan(&p.Resource, &p.Action, &p.Domain, &p.Label, &p.IsHighRisk); err != nil {
-			return nil, err
-		}
-		out = append(out, &p)
-	}
-	return out, rows.Err()
 }
 
 func (r *pgRepo) GetPlatformSetting(ctx context.Context, key string) (string, error) {

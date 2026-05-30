@@ -29,9 +29,9 @@ func PlatformAccess(svc *Service) gin.HandlerFunc {
 	}
 }
 
-// PlatformAuthz enforces a single (resource, action) on the platform side and, on
-// successful non-GET requests, records a platform audit entry. Under three_member
-// mode a high-risk point additionally requires a non-empty X-Reason header.
+// PlatformAuthz enforces a single (resource, action) on the platform side via the
+// generic RBAC policy match, and records a platform audit entry on successful non-GET
+// requests.
 func PlatformAuthz(svc *Service, aud *audit.Service, resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := ClaimsFromContext(c.Request.Context())
@@ -42,13 +42,6 @@ func PlatformAuthz(svc *Service, aud *audit.Service, resource, action string) gi
 		ctx := c.Request.Context()
 		if err := svc.EnforcePlatform(ctx, claims.PlatformUserID, resource, action); err != nil {
 			apiresp.Fail(c, err)
-			return
-		}
-
-		mode := svc.GovernanceMode(ctx)
-		reason := c.GetHeader("X-Reason")
-		if mode == ModeThreeMember && svc.IsHighRiskPermission(resource, action) && reason == "" {
-			apiresp.Fail(c, errors.New(errors.KindParam, "iam.reason_required", "高危操作需在 X-Reason 头中填写原因"))
 			return
 		}
 
@@ -64,15 +57,13 @@ func PlatformAuthz(svc *Service, aud *audit.Service, resource, action string) gi
 			}
 			detail, _ := json.Marshal(gin.H{"path": c.Request.URL.Path, "status": c.Writer.Status()})
 			aud.RecordPlatform(ctx, audit.PlatformEntry{
-				Actor:          string(claims.PlatformUserID),
-				ActorRole:      strings.Join(codes, ","),
-				Action:         resource + "/" + action,
-				Resource:       resource,
-				ResourceID:     c.Param("id"),
-				Reason:         reason,
-				GovernanceMode: mode,
-				TraceID:        kernel.TraceIDFromContext(ctx),
-				Detail:         detail,
+				Actor:      string(claims.PlatformUserID),
+				ActorRole:  strings.Join(codes, ","),
+				Action:     resource + "/" + action,
+				Resource:   resource,
+				ResourceID: c.Param("id"),
+				TraceID:    kernel.TraceIDFromContext(ctx),
+				Detail:     detail,
 			})
 		}
 	}
@@ -96,17 +87,7 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 		perms, _ := svc.PlatformPermissionsForUser(ctx, claims.PlatformUserID)
 		apiresp.OK(c, gin.H{
 			"roles": codes, "permissions": perms, "is_super_admin": isSuper,
-			"governance_mode": svc.GovernanceMode(ctx),
 		})
-	})
-
-	r.GET("/platform/rbac/permissions", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
-		perms, err := svc.repo.ListPlatformPermissions(c.Request.Context())
-		if err != nil {
-			apiresp.Fail(c, err)
-			return
-		}
-		apiresp.OK(c, gin.H{"permissions": perms})
 	})
 
 	r.GET("/platform/rbac/roles", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
@@ -161,7 +142,7 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
 			return
 		}
-		if err := svc.AddPlatformPolicy(c.Request.Context(), id, req.Resource, req.Action); err != nil {
+		if err := svc.repo.AddPlatformPolicy(c.Request.Context(), id, req.Resource, req.Action); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
@@ -241,34 +222,6 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.OK(c, gin.H{"ok": true})
-	})
-
-	r.GET("/platform/rbac/governance-mode", func(c *gin.Context) {
-		apiresp.OK(c, gin.H{"mode": svc.GovernanceMode(c.Request.Context())})
-	})
-
-	r.PUT("/platform/rbac/governance-mode", func(c *gin.Context) {
-		claims, _ := ClaimsFromContext(c.Request.Context())
-		if !svc.UserHasPlatformRole(c.Request.Context(), claims.PlatformUserID, "super_admin") {
-			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.super_admin_only", "仅超级管理员可切换治理模式"))
-			return
-		}
-		var req struct {
-			Mode string `json:"mode" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
-			return
-		}
-		if err := svc.SetGovernanceMode(c.Request.Context(), req.Mode, claims.PlatformUserID); err != nil {
-			apiresp.Fail(c, err)
-			return
-		}
-		aud.RecordPlatform(c.Request.Context(), audit.PlatformEntry{
-			Actor: string(claims.PlatformUserID), Action: "governance/switch",
-			Resource: "governance", ResourceID: req.Mode, GovernanceMode: req.Mode,
-		})
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 }

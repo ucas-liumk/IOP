@@ -1,14 +1,9 @@
 package integration
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/leo/iop/server/internal/services/iam"
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
@@ -32,7 +27,6 @@ func TestPlatformKeystone_SysAdminCannotAuthzOrAudit(t *testing.T) {
 	if err := a.IAM.EnforcePlatform(ctx, kernel.ID(uid), "audit", "read"); err == nil {
 		t.Fatal("sys_admin must NOT have audit/read")
 	}
-	_ = iam.PlatformPermission{}
 }
 
 // 命门 2: 安全管理员不能操作业务/配置;审计管理员不能配置/授权
@@ -66,29 +60,35 @@ func TestPlatformKeystone_SecAndAuditScoping(t *testing.T) {
 	}
 }
 
-// 命门 3: three_member 下 audit/purge 对超管也拒绝
-func TestPlatformKeystone_AuditPurgeLockedForSuper(t *testing.T) {
+// 通用 RBAC: 通配内置角色全权 + 作用域角色只在其策略内放行,无代码短路、无 governance 锁。
+func TestRBAC_WildcardAdminAndScopedRole(t *testing.T) {
 	a, cleanup := setupApp(t)
 	defer cleanup()
 	ctx := context.Background()
 
-	su, _ := mustCreateUser(t, a, "super")
-	_ = a.IAM.GrantPlatformRoleByCode(ctx, kernel.ID(su), "super_admin", "")
+	// super_admin holds a '*'/'*' policy (seeded by migration 000010) → all-access,
+	// including the formerly-locked audit/purge point. No code short-circuit involved.
+	su, _ := mustCreateUser(t, a, "wildsuper")
+	if err := a.IAM.GrantPlatformRoleByCode(ctx, kernel.ID(su), "super_admin", ""); err != nil {
+		t.Fatalf("grant super_admin: %v", err)
+	}
+	for _, ra := range [][2]string{{"org", "create"}, {"authz", "grant"}, {"audit", "read"}, {"audit", "purge"}, {"anything", "whatever"}} {
+		if err := a.IAM.EnforcePlatform(ctx, kernel.ID(su), ra[0], ra[1]); err != nil {
+			t.Fatalf("super_admin (wildcard) must allow %s/%s: %v", ra[0], ra[1], err)
+		}
+	}
 
-	t.Cleanup(func() { _ = a.IAM.SetGovernanceMode(context.Background(), iam.ModeSingleAdmin, "") })
-
-	_ = a.IAM.SetGovernanceMode(ctx, iam.ModeSingleAdmin, "")
-	if err := a.IAM.EnforcePlatform(ctx, kernel.ID(su), "audit", "purge"); err != nil {
-		t.Fatalf("single mode super should purge: %v", err)
+	// A scoped role (sys_admin) is allowed only within its seeded policy set.
+	sys, _ := mustCreateUser(t, a, "scoped")
+	if err := a.IAM.GrantPlatformRoleByCode(ctx, kernel.ID(sys), "sys_admin", ""); err != nil {
+		t.Fatalf("grant sys_admin: %v", err)
 	}
-	_ = a.IAM.SetGovernanceMode(ctx, iam.ModeThreeMember, "")
-	if err := a.IAM.EnforcePlatform(ctx, kernel.ID(su), "audit", "purge"); err == nil {
-		t.Fatal("three_member: super_admin must NOT purge audit")
+	if err := a.IAM.EnforcePlatform(ctx, kernel.ID(sys), "org", "create"); err != nil {
+		t.Fatalf("sys_admin should allow org/create: %v", err)
 	}
-	if err := a.IAM.EnforcePlatform(ctx, kernel.ID(su), "org", "create"); err != nil {
-		t.Fatalf("super should still create orgs in three_member: %v", err)
+	if err := a.IAM.EnforcePlatform(ctx, kernel.ID(sys), "authz", "grant"); err == nil {
+		t.Fatal("sys_admin must NOT have authz/grant (outside its scope)")
 	}
-	_ = a.IAM.SetGovernanceMode(ctx, iam.ModeSingleAdmin, "") // restore (avoid leaking mode to other tests)
 }
 
 // 命门 5: 无平台角色 → 无访问
@@ -120,89 +120,5 @@ func TestPlatformKeystone_BackfilledAdminIsSuper(t *testing.T) {
 	}
 	if !a.IAM.UserHasPlatformRole(ctx, kernel.ID(adminID), "super_admin") {
 		t.Fatal("backfilled admin must hold super_admin")
-	}
-}
-
-// 命门 6: 非超管无法切换治理模式 (HTTP level)
-//
-// Option A (real HTTP test): create a user → grant sys_admin (NOT super_admin) →
-// login via POST /api/auth/login with email → use Bearer token to PUT
-// /api/platform/rbac/governance-mode → assert 403 and that the mode is unchanged.
-func TestPlatformKeystone_NonSuperCannotSwitchMode(t *testing.T) {
-	a, cleanup := setupApp(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	// Spin up a real HTTP server backed by the full engine.
-	srv := httptest.NewServer(a.Engine())
-	defer srv.Close()
-
-	// Restore governance mode to single_admin on test exit in case anything leaked.
-	t.Cleanup(func() {
-		_ = a.IAM.SetGovernanceMode(context.Background(), iam.ModeSingleAdmin, "")
-	})
-
-	// 1. Create a user and grant sys_admin (not super_admin).
-	uid, email := mustCreateUser(t, a, "nonsupermode")
-	if err := a.IAM.GrantPlatformRoleByCode(ctx, kernel.ID(uid), "sys_admin", ""); err != nil {
-		t.Fatalf("grant sys_admin: %v", err)
-	}
-
-	// Sanity check: the user must NOT already hold super_admin.
-	if a.IAM.UserHasPlatformRole(ctx, kernel.ID(uid), "super_admin") {
-		t.Fatal("test setup error: sys_admin user must not have super_admin")
-	}
-
-	// 2. Login via HTTP to obtain a Bearer token.
-	loginBody, _ := json.Marshal(map[string]string{
-		"email":    email,
-		"password": "Test1234abc!",
-	})
-	loginResp, err := http.Post(srv.URL+"/api/auth/login", "application/json", bytes.NewReader(loginBody))
-	if err != nil {
-		t.Fatalf("login HTTP: %v", err)
-	}
-	defer loginResp.Body.Close()
-	if loginResp.StatusCode != http.StatusOK {
-		t.Fatalf("login expected 200, got %d", loginResp.StatusCode)
-	}
-	var loginData struct {
-		Data struct {
-			Token struct {
-				AccessToken string `json:"access_token"`
-			} `json:"token"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(loginResp.Body).Decode(&loginData); err != nil {
-		t.Fatalf("decode login response: %v", err)
-	}
-	token := loginData.Data.Token.AccessToken
-	if token == "" {
-		t.Fatal("login returned empty access_token")
-	}
-
-	// 3. Ensure mode starts as single_admin.
-	_ = a.IAM.SetGovernanceMode(ctx, iam.ModeSingleAdmin, "")
-
-	// 4. Attempt PUT /api/platform/rbac/governance-mode with the sys_admin token.
-	putBody, _ := json.Marshal(map[string]string{"mode": "three_member"})
-	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/platform/rbac/governance-mode", bytes.NewReader(putBody))
-	putReq.Header.Set("Content-Type", "application/json")
-	putReq.Header.Set("Authorization", "Bearer "+token)
-	putResp, err := http.DefaultClient.Do(putReq)
-	if err != nil {
-		t.Fatalf("PUT governance-mode HTTP: %v", err)
-	}
-	defer putResp.Body.Close()
-
-	// 5. Assert the server returned 403.
-	if putResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 Forbidden for sys_admin switching mode, got %d", putResp.StatusCode)
-	}
-
-	// 6. Assert the mode was NOT changed (defence-in-depth: verify DB state).
-	got := a.IAM.GovernanceMode(ctx)
-	if got != iam.ModeSingleAdmin {
-		t.Fatalf("mode must remain single_admin after rejected attempt, got %q", got)
 	}
 }

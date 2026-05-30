@@ -347,12 +347,9 @@ func (s *Service) Enforce(ctx context.Context, memberID, tenantID kernel.ID, res
 	if len(roles) == 0 {
 		return errors.New(errors.KindForbidden, "iam.no_role", "无权限")
 	}
-	// Built-in shortcut: tenant_admin / platform_admin bypass.
-	for _, r := range roles {
-		if r.Code == "platform_admin" || r.Code == "tenant_admin" {
-			return nil
-		}
-	}
+	// No code-level admin bypass: built-in admin roles (tenant_admin/platform_admin)
+	// carry an all-access '*'/'*' role_policy (seeded in migration 000010), so they
+	// pass the generic policy match below like any other role.
 	ids := make([]kernel.ID, len(roles))
 	for i, r := range roles {
 		ids[i] = r.ID
