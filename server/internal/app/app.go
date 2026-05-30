@@ -349,6 +349,10 @@ func (a *App) Engine() *gin.Engine {
 	platform.Use(iam.PlatformAccess(a.IAM))
 	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool)
 	iam.RegisterPlatformRBACRoutes(platform, a.IAM, a.Audit)
+	// P3 platform-console extras: notice / params / operation+login logs /
+	// online users / monitor / cron jobs. Each route is individually gated with
+	// PlatformAuthz(resource:action).
+	iam.RegisterPlatformExtrasRoutes(platform, a.IAM, a.Audit, a.Pool, &monitorProbe{health: a.Health, rdb: a.RDB})
 	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
 	// Complete platform-console menu catalog (unfiltered) for the role editor.
 	a.RegisterPlatformMenuCatalogRoute(platform)

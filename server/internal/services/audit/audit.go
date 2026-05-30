@@ -301,13 +301,54 @@ func (s *Service) RecordPlatform(ctx context.Context, e PlatformEntry) {
 
 // ListPlatform returns platform-scoped audit entries, newest first.
 func (s *Service) ListPlatform(ctx context.Context, p kernel.Pagination) ([]PlatformEntry, error) {
+	return s.ListPlatformFiltered(ctx, p, ListFilter{})
+}
+
+// ListPlatformFiltered queries public.platform_audit_log with optional
+// actor/action/time filters (see ListFilter), newest first, paginated. Used by
+// the platform operation log (free filters) and login log (ActionLike '%login%').
+func (s *Service) ListPlatformFiltered(ctx context.Context, p kernel.Pagination, f ListFilter) ([]PlatformEntry, error) {
 	p = p.Normalize()
+	args := []any{p.PageSize, p.Offset()}
+	where := ""
+	idx := 3
+	if f.Actor != "" {
+		where += " AND actor = $" + strconv.Itoa(idx)
+		args = append(args, f.Actor)
+		idx++
+	}
+	if f.Action != "" {
+		where += " AND action = $" + strconv.Itoa(idx)
+		args = append(args, f.Action)
+		idx++
+	}
+	if f.ActionPrefix != "" {
+		where += " AND action LIKE $" + strconv.Itoa(idx)
+		args = append(args, f.ActionPrefix+"%")
+		idx++
+	}
+	if f.ActionLike != "" {
+		where += " AND action ILIKE $" + strconv.Itoa(idx)
+		args = append(args, f.ActionLike)
+		idx++
+	}
+	if f.From != "" {
+		where += " AND occurred_at >= $" + strconv.Itoa(idx)
+		args = append(args, f.From)
+		idx++
+	}
+	if f.To != "" {
+		where += " AND occurred_at <= $" + strconv.Itoa(idx)
+		args = append(args, f.To)
+		idx++
+	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, occurred_at, actor, COALESCE(actor_role,''), action, COALESCE(resource,''),
 		        COALESCE(resource_id,''), COALESCE(reason,''), COALESCE(governance_mode,''),
 		        COALESCE(trace_id,''), COALESCE(detail,'null'::jsonb)
-		 FROM public.platform_audit_log ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`,
-		p.PageSize, p.Offset())
+		 FROM public.platform_audit_log WHERE 1=1`+where+`
+		 ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`,
+		args...)
 	if err != nil {
 		return nil, err
 	}
