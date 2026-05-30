@@ -122,18 +122,45 @@ func (r *pgRepo) GetUserByUsername(ctx context.Context, username string) (*Platf
 		`SELECT `+userSelectCols+` FROM public.platform_user WHERE username = $1`, username))
 }
 
-// GetUserByLogin tries username first, then email — lets users sign in with either.
-// If the login string contains "@" we go straight to email lookup.
+// GetUserByLogin resolves a login string to a user. Username and phone are the
+// primary identities; email is a fallback so legacy email accounts keep working.
+//   - "@" present            → email lookup (the only form that can contain "@").
+//   - all digits (10-15 len) → phone lookup, then username as a fallback.
+//   - otherwise              → username, then email as a fallback.
+//
+// Email lookups stay safe when a user's email is NULL: the WHERE email = $1 simply
+// matches no rows rather than erroring.
 func (r *pgRepo) GetUserByLogin(ctx context.Context, login string) (*PlatformUser, error) {
 	if login == "" {
 		return nil, nil
 	}
-	if !strings.Contains(login, "@") {
-		if u, err := r.GetUserByUsername(ctx, login); err != nil || u != nil {
+	if strings.Contains(login, "@") {
+		return r.GetUserByEmail(ctx, login)
+	}
+	if isAllDigits(login) {
+		if u, err := r.GetUserByPhone(ctx, login); err != nil || u != nil {
 			return u, err
 		}
+		return r.GetUserByUsername(ctx, login)
+	}
+	if u, err := r.GetUserByUsername(ctx, login); err != nil || u != nil {
+		return u, err
 	}
 	return r.GetUserByEmail(ctx, login)
+}
+
+// isAllDigits reports whether s is a non-empty run of ASCII digits of plausible
+// phone length, so we only attempt a phone lookup for phone-shaped logins.
+func isAllDigits(s string) bool {
+	if len(s) < 6 || len(s) > 20 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *pgRepo) GetUserByID(ctx context.Context, id kernel.ID) (*PlatformUser, error) {

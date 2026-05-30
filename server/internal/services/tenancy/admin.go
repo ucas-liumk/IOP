@@ -18,12 +18,15 @@ type MemberPost struct {
 	Name   string    `json:"name"`
 }
 
-// MemberRow joins tenant_<slug>.member with tenant_membership for admin listing.
+// MemberRow joins tenant_<slug>.member with public.platform_user for admin listing.
+// Username (the primary login identity) is joined in from platform_user; Email is an
+// optional secondary field carried from the member projection.
 type MemberRow struct {
 	MemberID       kernel.ID    `json:"member_id"`
 	PlatformUserID kernel.ID    `json:"platform_user_id"`
+	Username       string       `json:"username"`
 	DisplayName    string       `json:"display_name"`
-	Email          string       `json:"email"`
+	Email          string       `json:"email,omitempty"`
 	Department     string       `json:"department"`
 	DeptID         *kernel.ID   `json:"dept_id,omitempty"`
 	Title          string       `json:"title"`
@@ -80,7 +83,9 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 	idx := 3
 	where := ""
 	if cmd.Search != "" {
-		where += fmt.Sprintf(" AND (m.display_name ILIKE $%d OR m.email ILIKE $%d OR m.department ILIKE $%d)", idx, idx, idx)
+		// Primary search is over display_name / username / phone (identity is
+		// username/phone-first). department is kept as a convenience match.
+		where += fmt.Sprintf(" AND (m.display_name ILIKE $%d OR COALESCE(u.username,'') ILIKE $%d OR COALESCE(m.phone,'') ILIKE $%d OR COALESCE(m.department,'') ILIKE $%d)", idx, idx, idx, idx)
 		args = append(args, "%"+cmd.Search+"%")
 		idx++
 	}
@@ -90,10 +95,11 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 		idx++
 	}
 	rows, err := tx.Query(ctx,
-		`SELECT m.id, m.platform_user_id, m.display_name, m.email,
+		`SELECT m.id, m.platform_user_id, COALESCE(u.username,''), m.display_name, COALESCE(m.email,''),
 		        COALESCE(m.department,''), m.dept_id, COALESCE(m.title,''), COALESCE(m.phone,''),
 		        m.status, to_char(m.joined_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM member m
+		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
 		 WHERE 1=1`+where+`
 		 ORDER BY m.joined_at DESC
 		 LIMIT $1 OFFSET $2`, args...)
@@ -105,7 +111,7 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 	idsList := []kernel.ID{}
 	for rows.Next() {
 		var r MemberRow
-		if err := rows.Scan(&r.MemberID, &r.PlatformUserID, &r.DisplayName, &r.Email,
+		if err := rows.Scan(&r.MemberID, &r.PlatformUserID, &r.Username, &r.DisplayName, &r.Email,
 			&r.Department, &r.DeptID, &r.Title, &r.Phone, &r.Status, &r.JoinedAt); err != nil {
 			return nil, err
 		}

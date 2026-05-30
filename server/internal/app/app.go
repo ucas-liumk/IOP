@@ -148,6 +148,14 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		logger.Info("tenant schemas synced", zap.Int("count", n))
 	}
 
+	// Demo seed: ensure the 北京市人民政府 (bjgov) demo organization + a realistic dept
+	// tree + sample 公务员 exist. Guarded so it never runs in production — enabled in
+	// dev (or forced on via IOP_SEED_DEMO). Idempotent across restarts.
+	demoEnabled := !cfg.IsProd() || iam.DemoSeedForced()
+	if err := iam.SeedDemoOrg(ctx, iamSvc, tenantSvc, pool, demoEnabled, logger); err != nil {
+		logger.Warn("seed demo org failed", zap.Error(err))
+	}
+
 	tenantDB := tenantdb.NewTenantDB(pool)
 
 	// Audit: tenant lookup via tenancy service
