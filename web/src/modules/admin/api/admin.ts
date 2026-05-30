@@ -45,7 +45,10 @@ export async function getMyAdminFlags(): Promise<MeAdmin> {
 export interface MemberPost { post_id: string; code: string; name: string }
 export interface Member {
   member_id: string; platform_user_id: string;
-  display_name: string; email: string;
+  // username is the primary login identity (joined from platform_user); email is
+  // optional and often NULL — never use it as the primary display identifier.
+  username: string;
+  display_name: string; email?: string;
   department: string; dept_id?: string | null; title: string; phone: string;
   status: string; joined_at: string;
   posts: MemberPost[];

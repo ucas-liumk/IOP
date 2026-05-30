@@ -1,9 +1,11 @@
 <template>
   <section class="admin-page">
-    <PageHeader title="部门管理" :sub="`共 ${flatCount} 个部门 · 树形组织结构`">
+    <PageHeader title="组织机构" :sub="`共 ${flatCount} 个部门 · 树形组织结构`">
       <template #actions>
         <button class="btn btn-ghost" @click="reload">刷新</button>
-        <button class="btn btn-primary" v-perm="'department:write'" @click="openCreate(null)">+ 新建根部门</button>
+        <button class="btn btn-ghost" v-perm="'dept:write'" @click="downloadDeptsCsv">导出</button>
+        <button class="btn btn-ghost" v-perm="'dept:write'" @click="importOpen = true">导入</button>
+        <button class="btn btn-primary" v-perm="'dept:write'" @click="openCreate(null)">+ 新建根部门</button>
       </template>
     </PageHeader>
 
@@ -11,9 +13,13 @@
       <!-- Left: department tree -->
       <article class="card tree-pane">
         <div class="pane-head">组织架构</div>
+        <div class="tree-search">
+          <input class="input search" v-model="treeFilter" placeholder="搜索部门" />
+        </div>
         <TreeView
           :nodes="tree"
           :selected-id="selectedId"
+          :filter="treeFilter"
           id-key="id"
           label-key="name"
           @select="select"
@@ -45,6 +51,11 @@
           </div>
 
           <!-- View mode -->
+          <div v-if="mode === 'view' && selected" class="breadcrumb">
+            <span v-for="(seg, i) in breadcrumb(selected)" :key="i" class="crumb">
+              <span v-if="i > 0" class="crumb-sep">/</span>{{ seg }}
+            </span>
+          </div>
           <dl v-if="mode === 'view' && selected" class="info-grid">
             <div><dt>部门名称</dt><dd>{{ selected.name }}</dd></div>
             <div><dt>上级部门</dt><dd>{{ parentName(selected) }}</dd></div>
@@ -109,16 +120,26 @@
         </template>
       </article>
     </div>
+
+    <ImportDialog
+      v-model:open="importOpen"
+      title="导入部门"
+      template-url="/admin/depts/template"
+      import-url="/admin/depts/import"
+      template-name="departments_template.csv"
+      @done="onImportDone"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { PageHeader, EmptyState, TreeView } from "@/shell/components";
+import { PageHeader, EmptyState, TreeView, ImportDialog, type BulkResult } from "@/shell/components";
 import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
 import {
   getDeptTree, listDepts, createDept, updateDept, deleteDept, moveDept,
+  downloadDeptsCsv,
   type DeptTreeNode, type Dept,
 } from "../api/admin";
 
@@ -131,6 +152,8 @@ const selectedId = ref<string | null>(null);
 const mode = ref<"view" | "create" | "edit">("view");
 const busy = ref(false);
 const formError = ref("");
+const treeFilter = ref("");
+const importOpen = ref(false);
 
 const flatCount = computed(() => flat.value.length);
 const selected = computed(() => flat.value.find((d) => d.id === selectedId.value) ?? null);
@@ -184,6 +207,24 @@ function select(id: string) {
 function parentName(d: Dept): string {
   if (!d.parent_id) return "（根部门）";
   return flat.value.find((x) => x.id === d.parent_id)?.name ?? "—";
+}
+
+// Full ancestor → self name chain, used for the detail-panel breadcrumb.
+function breadcrumb(d: Dept): string[] {
+  const segs: string[] = [];
+  let cur: Dept | undefined = d;
+  let depth = 0;
+  while (cur && depth < 20) {
+    segs.unshift(cur.name);
+    cur = cur.parent_id ? flat.value.find((x) => x.id === cur!.parent_id) : undefined;
+    depth++;
+  }
+  return segs;
+}
+
+// Re-fetch the tree after a bulk import so newly created departments appear.
+async function onImportDone(_r: BulkResult) {
+  await reload();
 }
 
 // indented display name in the parent <select> for a sense of hierarchy.
@@ -279,7 +320,12 @@ async function removeDept() {
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 .tree-pane { padding: 12px; }
 .pane-head { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; padding: 4px 8px 10px; }
+.tree-search { padding: 0 4px 8px; }
+.tree-search .search { width: 100%; font-size: 13px; padding: 6px 10px; box-sizing: border-box; }
 .tree-empty-hint { color: var(--text-4); font-size: 12.5px; padding: 12px 8px; }
+.breadcrumb { display: flex; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--text-3); margin-bottom: 14px; }
+.crumb { display: inline-flex; align-items: center; }
+.crumb-sep { margin: 0 6px; color: var(--text-4); }
 .dept-node { display: inline-flex; align-items: center; gap: 6px; }
 .tag-off { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--bg-deep); color: var(--text-3); border-radius: 3px; }
 

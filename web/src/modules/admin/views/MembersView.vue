@@ -1,12 +1,12 @@
 <template>
   <section class="admin-page">
-    <PageHeader title="用户管理" :sub="`共 ${members.length} 名成员${activeDeptName ? ' · ' + activeDeptName : ''}`">
+    <PageHeader title="用户管理" :sub="`共 ${total} 名成员${activeDeptName ? ' · ' + activeDeptName : ''}`">
       <template #actions>
-        <input class="input search" v-model="search" placeholder="搜索姓名 / 邮箱 / 部门" @keyup.enter="reload" />
+        <input class="input search" v-model="search" placeholder="搜索姓名 / 账户名 / 手机" @keyup.enter="search1" />
+        <button class="btn btn-ghost" @click="search1">搜索</button>
         <button class="btn btn-ghost" @click="reload">刷新</button>
-        <button class="btn btn-ghost" @click="exportCsv">导出 CSV</button>
-        <button class="btn btn-ghost" v-perm="'member:write'" @click="triggerImport">导入 CSV</button>
-        <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onImportFile" />
+        <button class="btn btn-ghost" v-perm="'member:write'" @click="downloadMembersCsv">导出</button>
+        <button class="btn btn-ghost" v-perm="'member:write'" @click="importOpen = true">导入</button>
       </template>
     </PageHeader>
 
@@ -14,13 +14,17 @@
       <!-- Left: department tree filter -->
       <article class="card tree-pane">
         <div class="pane-head">按部门筛选</div>
+        <div class="tree-search">
+          <input class="input search-sm" v-model="deptFilter" placeholder="搜索部门" />
+        </div>
         <div class="filter-all" :class="{ active: !activeDeptId }" @click="filterDept(null)">全部成员</div>
         <label class="subtree-toggle">
-          <input type="checkbox" v-model="subtree" @change="reload" /> 含子部门
+          <input type="checkbox" v-model="subtree" @change="search1" /> 含子部门
         </label>
         <TreeView
           :nodes="deptTree"
           :selected-id="activeDeptId"
+          :filter="deptFilter"
           id-key="id"
           label-key="name"
           @select="filterDept"
@@ -29,13 +33,16 @@
 
       <!-- Right: members table -->
       <div class="members-pane">
-        <DataTable :columns="columns" :rows="members" rowKey="member_id" emptyText="暂无成员">
+        <DataTable :columns="columns" :rows="members" rowKey="member_id" :loading="loading" emptyText="暂无成员">
           <template #cell-member="{ row }">
             <div class="member-cell" :class="{ off: row.status !== 'active' }">
-              <div class="avatar" :style="{ background: avatarColor(row.display_name) }">{{ (row.display_name || '?')[0] }}</div>
+              <div class="avatar" :style="{ background: avatarColor(row.display_name || row.username) }">{{ (row.display_name || row.username || '?')[0] }}</div>
               <div>
-                <div class="name">{{ row.display_name }}</div>
-                <div class="email-tiny">{{ row.email }}</div>
+                <div class="name">{{ row.display_name || row.username }}</div>
+                <div class="sub-id">
+                  <code class="acct">{{ row.username || '—' }}</code>
+                  <span v-if="row.phone" class="phone">· {{ row.phone }}</span>
+                </div>
               </div>
             </div>
           </template>
@@ -63,8 +70,24 @@
             </div>
           </template>
         </DataTable>
+        <Pagination
+          v-model:page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          @update:page="reload"
+          @update:page-size="reload"
+        />
       </div>
     </div>
+
+    <ImportDialog
+      v-model:open="importOpen"
+      title="导入成员"
+      template-url="/admin/members/template"
+      import-url="/admin/members/import"
+      template-name="members_template.csv"
+      @done="onImportDone"
+    />
 
     <!-- Roles modal -->
     <div v-if="rolesFor" class="modal-overlay" @click.self="rolesFor = null">
@@ -149,14 +172,15 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { PageHeader, DataTable, TreeView, type Column } from "@/shell/components";
+import { PageHeader, DataTable, TreeView, Pagination, ImportDialog, type Column, type BulkResult } from "@/shell/components";
 import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
 import {
-  listMembers, setMemberDisabled, setMemberDept,
+  listMembersPaged, setMemberDisabled, setMemberDept,
   assignMemberPost, removeMemberPost,
   listRoles, getMemberRoles, grantRoleToMember, revokeRoleFromMember,
   listPosts, getDeptTree, listDepts,
+  downloadMembersCsv,
   resetPlatformUserPassword,
   type Member, type Role, type Post, type DeptTreeNode, type Dept,
 } from "../api/admin";
@@ -168,16 +192,24 @@ const members = ref<Member[]>([]);
 const search = ref("");
 const subtree = ref(false);
 const busy = ref(false);
+const loading = ref(false);
 const actionError = ref("");
+const importOpen = ref(false);
+
+// Server-side pagination state.
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
 
 const deptTree = ref<DeptTreeNode[]>([]);
 const deptFlat = ref<Dept[]>([]);
+const deptFilter = ref("");
 const activeDeptId = ref<string | null>(null);
 
 const activeDeptName = computed(() => deptFlat.value.find((d) => d.id === activeDeptId.value)?.name ?? "");
 
 const columns: Column[] = [
-  { key: "member",     label: "成员",   width: 240 },
+  { key: "member",     label: "成员",   width: 260 },
   { key: "department", label: "部门",   width: 130 },
   { key: "posts",      label: "岗位" },
   { key: "status",     label: "状态",   width: 90 },
@@ -190,16 +222,39 @@ onMounted(async () => {
 });
 
 async function reload() {
-  members.value = await listMembers({
-    search: search.value.trim(),
-    dept_id: activeDeptId.value ?? undefined,
-    subtree: subtree.value,
-  });
+  loading.value = true;
+  try {
+    const res = await listMembersPaged({
+      page: page.value,
+      pageSize: pageSize.value,
+      search: search.value.trim(),
+      deptId: activeDeptId.value,
+      subtree: subtree.value,
+    });
+    members.value = res.data;
+    total.value = res.total;
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Reset to page 1 whenever a filter changes (search / dept / subtree), so the
+// server-side offset stays valid.
+function search1() {
+  page.value = 1;
+  reload();
 }
 
 function filterDept(id: string | null) {
   activeDeptId.value = id;
+  page.value = 1;
   reload();
+}
+
+// Re-fetch the current page after a bulk import; reset to page 1 so new rows show.
+async function onImportDone(_r: BulkResult) {
+  page.value = 1;
+  await reload();
 }
 
 async function toggleStatus(m: Member) {
@@ -314,70 +369,6 @@ async function confirmReset() {
   } finally { busy.value = false; }
 }
 
-// === CSV export / import ===
-function exportCsv() {
-  const header = ["display_name", "email", "department", "title", "phone", "status"];
-  const escape = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const lines = [header.join(",")];
-  for (const m of members.value) {
-    lines.push([m.display_name, m.email, m.department, m.title, m.phone, m.status].map(escape).join(","));
-  }
-  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `members-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-const fileInput = ref<HTMLInputElement | null>(null);
-function triggerImport() { fileInput.value?.click(); }
-async function onImportFile(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = ""; // allow re-selecting the same file
-  if (!file) return;
-  const text = await file.text();
-  const rows = parseCsv(text);
-  if (rows.length === 0) { notify.warning("CSV 没有可导入的数据行"); return; }
-  notify.info(`已解析 ${rows.length} 行。导入功能为占位：当前后端无批量创建接口，请使用平台用户管理创建账号。`, 7000);
-  // Best-effort placeholder: no tenant member create-by-CSV endpoint exists yet,
-  // so we surface the parse result rather than silently failing. Wiring to a real
-  // bulk endpoint can replace this block when the backend exposes one.
-}
-function parseCsv(text: string): Record<string, string>[] {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return [];
-  const header = splitCsvLine(lines[0]).map((h) => h.replace(/^﻿/, "").trim());
-  const out: Record<string, string>[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = splitCsvLine(lines[i]);
-    const rec: Record<string, string> = {};
-    header.forEach((h, j) => (rec[h] = (cells[j] ?? "").trim()));
-    out.push(rec);
-  }
-  return out;
-}
-function splitCsvLine(line: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (line[i + 1] === '"') { cur += '"'; i++; }
-        else inQuotes = false;
-      } else cur += ch;
-    } else if (ch === '"') inQuotes = true;
-    else if (ch === ",") { out.push(cur); cur = ""; }
-    else cur += ch;
-  }
-  out.push(cur);
-  return out;
-}
-
 // === Helpers ===
 function avatarColor(name: string) {
   const seed = (name || "?").split("").reduce((s, c) => s + c.charCodeAt(0), 0);
@@ -418,12 +409,14 @@ function cryptoIndex(n: number): number {
 <style scoped>
 .admin-page { display: flex; flex-direction: column; gap: var(--sp-5); }
 .search { width: 220px; font-size: 13px; padding: 6px 10px; }
-.hidden-file { display: none; }
 
 .split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 .tree-pane { padding: 12px; }
 .pane-head { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; padding: 4px 8px 8px; }
+.tree-search { padding: 0 4px 8px; }
+.tree-search .search-sm { width: 100%; font-size: 13px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
+.tree-search .search-sm:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
 .filter-all { padding: 6px 8px; font-size: 13px; border-radius: 6px; cursor: pointer; color: var(--text-2); }
 .filter-all:hover { background: var(--surface-2); }
 .filter-all.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
@@ -434,7 +427,9 @@ function cryptoIndex(n: number): number {
 .member-cell.off { opacity: .55; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; color: white; font-weight: 600; font-size: 12px; display: grid; place-items: center; }
 .name { font-weight: 600; font-size: 13.5px; }
-.email-tiny { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.sub-id { font-size: 11.5px; color: var(--text-3); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+.acct { font-family: var(--ff-mono); font-size: 11px; color: var(--text-2); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; }
+.phone { color: var(--text-3); }
 .chip-dept { display: inline-block; padding: 2px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; font-size: 11.5px; }
 .chip-post { display: inline-block; padding: 2px 8px; margin: 0 4px 2px 0; background: var(--primary-soft); color: var(--primary); border-radius: 999px; font-size: 11.5px; font-weight: 600; }
 .muted { color: var(--text-4); }

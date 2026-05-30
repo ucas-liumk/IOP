@@ -1,10 +1,12 @@
 <template>
   <section class="admin-page">
-    <PageHeader title="用户管理" :sub="`平台用户 · 共 ${users.length} 个${search ? ' · 搜索: ' + search : ''}`">
+    <PageHeader title="全局用户" :sub="`平台用户 · 共 ${total} 个${search ? ' · 搜索: ' + search : ''}`">
       <template #actions>
         <div class="head-actions">
-          <input class="input search" v-model="search" placeholder="搜索用户名 / 手机 / 邮箱" @keyup.enter="refresh" />
+          <input class="input search" v-model="search" placeholder="搜索用户名 / 手机 / 邮箱" @keyup.enter="search1" />
+          <button class="btn btn-ghost" @click="search1">搜索</button>
           <button class="btn btn-ghost" @click="refresh">刷新</button>
+          <button class="btn btn-ghost" @click="exportCsv">导出</button>
           <button class="btn btn-primary" v-perm="'user:write'" @click="openCreate">+ 新建用户</button>
         </div>
       </template>
@@ -15,7 +17,7 @@
       <button class="page-error-close" @click="pageError = ''">×</button>
     </div>
 
-    <DataTable :columns="columns" :rows="users" rowKey="id">
+    <DataTable :columns="columns" :rows="users" rowKey="id" :loading="loading">
       <template #cell-account="{ row }">
         <div class="user-cell">
           <div class="u-avatar">{{ initialsOf(row) }}</div>
@@ -48,7 +50,13 @@
       </template>
     </DataTable>
 
-    <EmptyState v-if="users.length === 0 && !loading" title="没有匹配的用户" sub="" />
+    <Pagination
+      v-model:page="page"
+      v-model:page-size="pageSize"
+      :total="total"
+      @update:page="refresh"
+      @update:page-size="refresh"
+    />
 
     <!-- Create modal -->
     <div v-if="creating" class="modal-overlay" @click.self="closeCreate">
@@ -138,14 +146,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { PageHeader, DataTable, EmptyState, type Column } from "@/shell/components";
+import { PageHeader, DataTable, Pagination, type Column } from "@/shell/components";
 import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
 
 const notify = useNotification();
 const { confirm } = useConfirm();
 import {
-  listPlatformUsers, createPlatformUser,
+  listPlatformUsersPaged, createPlatformUser,
   disablePlatformUser, enablePlatformUser, resetPlatformUserPassword,
   listAllTenants, type PlatformTenant,
   type PlatformUser,
@@ -159,6 +167,11 @@ const busy = ref(false);
 const actionError = ref("");
 const pageError = ref(""); // row-level action errors (shown as a banner)
 
+// Server-side pagination state.
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
+
 const columns: Column[] = [
   { key: "account",       label: "账号",       width: 320 },
   { key: "created_at",    label: "创建时间",   width: 160 },
@@ -169,8 +182,41 @@ const columns: Column[] = [
 async function refresh() {
   loading.value = true;
   try {
-    users.value = await listPlatformUsers(search.value.trim());
+    const res = await listPlatformUsersPaged({
+      page: page.value,
+      pageSize: pageSize.value,
+      search: search.value.trim(),
+    });
+    users.value = res.data;
+    total.value = res.total;
   } finally { loading.value = false; }
+}
+
+// Reset to page 1 on a new search so the server-side offset stays valid.
+function search1() {
+  page.value = 1;
+  refresh();
+}
+
+// Export the currently-loaded page as CSV. The platform-user endpoint has no
+// server-side export route, so this is a best-effort client-side dump (username
+// primary; email is optional and may be blank).
+function exportCsv() {
+  const header = ["username", "phone", "email", "status", "created_at", "last_login_at"];
+  const esc = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [header.join(",")];
+  for (const u of users.value) {
+    lines.push([u.username ?? "", u.phone ?? "", u.email ?? "", u.status, u.created_at, u.last_login_at ?? ""].map(esc).join(","));
+  }
+  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `platform-users-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 onMounted(async () => {

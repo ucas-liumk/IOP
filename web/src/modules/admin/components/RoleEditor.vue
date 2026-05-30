@@ -5,25 +5,41 @@
         <h3 class="re-title">
           {{ role.name }}
           <code class="re-code">{{ role.code }}</code>
-          <span v-if="role.built_in" class="tag-builtin">内置</span>
+          <span v-if="role.built_in" class="tag-builtin">🔒 内置</span>
         </h3>
         <p class="re-sub">勾选菜单授予对应权限 · 设置数据范围</p>
       </div>
-      <button class="btn btn-primary btn-sm" :disabled="busy" @click="saveScope">{{ busy ? '保存中…' : '保存设置' }}</button>
+      <button class="btn btn-primary btn-sm" :disabled="busy || role.built_in || !dirty" @click="save">
+        {{ busy ? '保存中…' : '保存设置' }}
+      </button>
     </div>
+
+    <div v-if="role.built_in" class="builtin-note">🔒 内置角色不可修改，权限与数据范围已锁定。</div>
 
     <div class="editor-body">
       <!-- Menu permission tree -->
-      <section class="re-section">
-        <div class="re-section-head">菜单权限</div>
+      <section class="re-section" :class="{ locked: role.built_in }">
+        <div class="re-section-head">
+          <span>菜单权限</span>
+          <div class="tree-tools">
+            <button type="button" class="link-btn" :disabled="role.built_in" @click="checkAll(true)">全选</button>
+            <button type="button" class="link-btn" :disabled="role.built_in" @click="checkAll(false)">取消全选</button>
+            <span class="tool-sep">|</span>
+            <button type="button" class="link-btn" @click="expandAll = true">展开</button>
+            <button type="button" class="link-btn" @click="expandAll = false">收起</button>
+          </div>
+        </div>
         <div class="menu-tree-box">
           <TreeView
+            :key="treeKey"
             :nodes="menus"
             :checked-ids="checkedKeys"
             checkbox
+            cascade
+            :default-expanded="expandAll"
             id-key="key"
             label-key="title"
-            @check="onCheck"
+            @check-set="onCheckSet"
           >
             <template #label="{ node }">
               <span class="menu-node" :class="{ dir: node.type === 'dir' }">
@@ -38,25 +54,29 @@
       </section>
 
       <!-- Data scope -->
-      <section class="re-section">
-        <div class="re-section-head">数据范围</div>
+      <section class="re-section" :class="{ locked: role.built_in }">
+        <div class="re-section-head"><span>数据范围</span></div>
         <div class="scope-options">
           <label v-for="opt in scopeOptions" :key="opt.value" class="scope-opt">
-            <input type="radio" :value="opt.value" v-model="dataScope" />
+            <input type="radio" :value="opt.value" v-model="dataScope" :disabled="role.built_in" />
             <span>{{ opt.label }}</span>
           </label>
         </div>
         <div v-if="dataScope === 'custom'" class="custom-depts">
           <div class="cd-head">选择部门</div>
-          <ul class="check-list">
-            <li v-for="d in depts" :key="d.id">
-              <label>
-                <input type="checkbox" :value="d.id" v-model="customDeptIds" />
-                <span>{{ d.name }}</span>
-              </label>
-            </li>
-            <li v-if="depts.length === 0" class="muted">尚无部门。</li>
-          </ul>
+          <input class="input dept-search" v-model="deptFilter" placeholder="搜索部门" :disabled="role.built_in" />
+          <div class="dept-tree-box">
+            <TreeView
+              :nodes="deptTree"
+              :checked-ids="customDeptIds"
+              checkbox
+              :filter="deptFilter"
+              id-key="id"
+              label-key="name"
+              @check="onDeptCheck"
+            />
+            <div v-if="depts.length === 0" class="muted">尚无部门。</div>
+          </div>
         </div>
       </section>
     </div>
@@ -68,8 +88,8 @@ import { computed, ref, watch } from "vue";
 import { TreeView } from "@/shell/components";
 import { useNotification } from "@/shell/notify";
 import {
-  addPolicy, removePolicy, updateRole,
-  type Role, type MenuNode, type Dept, type DataScope, type PolicyRule,
+  batchPolicy, updateRole,
+  type Role, type MenuNode, type Dept, type DataScope, type PolicyRule, type PolicyChange,
 } from "../api/admin";
 
 const props = defineProps<{
@@ -82,6 +102,9 @@ const emit = defineEmits<{ (e: "changed"): void }>();
 
 const notify = useNotification();
 const busy = ref(false);
+const expandAll = ref(true);
+const treeKey = ref(0); // bump to force the tree to re-read default-expanded
+const deptFilter = ref("");
 
 const scopeOptions: { value: DataScope; label: string }[] = [
   { value: "all", label: "全部数据" },
@@ -91,99 +114,159 @@ const scopeOptions: { value: DataScope; label: string }[] = [
   { value: "custom", label: "自定义部门" },
 ];
 
+// --- working (mutable) state, accumulated locally until 保存 ---
 const dataScope = ref<DataScope>(props.role.data_scope ?? "all");
 const customDeptIds = ref<string[]>([...(props.role.dept_ids ?? [])]);
+// checkedKeys is the live set of checked menu-node keys (cascade-driven).
+const checkedKeys = ref<string[]>([]);
 
-watch(
-  () => props.role,
-  (r) => {
-    dataScope.value = r.data_scope ?? "all";
-    customDeptIds.value = [...(r.dept_ids ?? [])];
-  },
-);
-
-// --- Menu checkbox <-> policy mapping ---
-// A menu node is "checked" when the role's policies satisfy its perm
-// (resource:action). Wildcards ("*:*", "res:*") count as satisfying.
-const grantedSet = computed(() => {
-  const set = new Set<string>();
-  for (const p of (props.role.policies ?? []) as PolicyRule[]) {
-    if (p.effect === "allow") set.add(`${p.resource}:${p.action}`);
-  }
-  return set;
-});
-
-function permSatisfied(perm: string): boolean {
-  if (!perm) return false;
-  const [needRes, needAct] = splitPerm(perm);
-  for (const g of grantedSet.value) {
-    const [gRes, gAct] = splitPerm(g);
-    if ((gRes === "*" || gRes === needRes) && (gAct === "*" || gAct === needAct)) return true;
-  }
-  return false;
-}
 function splitPerm(p: string): [string, string] {
   const i = p.lastIndexOf(":");
   if (i < 0) return [p, "*"];
   return [p.slice(0, i), p.slice(i + 1)];
 }
 
-// Keys of nodes whose perm is currently satisfied (drives the checkboxes).
-const checkedKeys = computed(() => {
+// Granted perms derived from the role's current policies (server truth). Used
+// only to seed the initial checkbox state. Wildcards count as satisfying.
+function permSatisfied(perm: string, granted: Set<string>): boolean {
+  if (!perm) return false;
+  const [needRes, needAct] = splitPerm(perm);
+  for (const g of granted) {
+    const [gRes, gAct] = splitPerm(g);
+    if ((gRes === "*" || gRes === needRes) && (gAct === "*" || gAct === needAct)) return true;
+  }
+  return false;
+}
+
+// Initial checked keys for the role. A node is "checked" (and so pushed) when it
+// is satisfied: a perm-bearing leaf is satisfied iff its perm is granted; a
+// perm-less leaf is always satisfied; a parent is satisfied iff its own perm (if
+// any) is granted AND every child is satisfied. Pushing satisfied perm-less nodes
+// keeps the cascade TreeView visuals consistent (no stuck-indeterminate parents).
+function computeInitialChecked(): string[] {
+  const granted = new Set<string>();
+  for (const p of (props.role.policies ?? []) as PolicyRule[]) {
+    if (p.effect === "allow") granted.add(`${p.resource}:${p.action}`);
+  }
   const keys: string[] = [];
-  walk(props.menus, (n) => {
-    if (n.perm && permSatisfied(n.perm)) keys.push(n.key);
-  });
+  const visit = (n: MenuNode): boolean => {
+    const children = n.children ?? [];
+    if (!children.length) {
+      const ok = !n.perm || permSatisfied(n.perm, granted);
+      if (ok) keys.push(n.key);
+      return ok;
+    }
+    const childResults = children.map(visit);
+    const ownOk = !n.perm || permSatisfied(n.perm, granted);
+    const checked = ownOk && childResults.every(Boolean);
+    if (checked) keys.push(n.key);
+    return checked;
+  };
+  for (const n of props.menus) visit(n);
   return keys;
+}
+
+// The snapshot of checked keys at load time — used to diff on save.
+const initialKeys = ref<Set<string>>(new Set());
+
+function reset() {
+  dataScope.value = props.role.data_scope ?? "all";
+  customDeptIds.value = [...(props.role.dept_ids ?? [])];
+  const init = computeInitialChecked();
+  checkedKeys.value = [...init];
+  initialKeys.value = new Set(init);
+}
+reset();
+watch(() => props.role, reset);
+// Re-seed checked keys if the menu list arrives after the role (async load).
+watch(() => props.menus, () => { if (props.menus.length) reset(); });
+// Remount the tree when expand/collapse-all toggles so default-expanded applies.
+watch(expandAll, () => { treeKey.value++; });
+
+// cascade TreeView emits the full resulting checked set.
+function onCheckSet(ids: string[]) {
+  if (props.role.built_in) return;
+  checkedKeys.value = ids;
+}
+
+function onDeptCheck(id: string, value: boolean) {
+  if (props.role.built_in) return;
+  const set = new Set(customDeptIds.value);
+  if (value) set.add(id); else set.delete(id);
+  customDeptIds.value = Array.from(set);
+}
+
+// Build a nested dept tree from the flat dept list (TreeView needs children).
+const deptTree = computed(() => {
+  const byId = new Map<string, Dept & { children: any[] }>();
+  for (const d of props.depts) byId.set(d.id, { ...d, children: [] });
+  const roots: any[] = [];
+  for (const d of props.depts) {
+    const node = byId.get(d.id)!;
+    if (d.parent_id && byId.has(d.parent_id)) byId.get(d.parent_id)!.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
 });
 
-// Collect the (node + descendants) perms so checking a dir cascades to children.
-function collectPerms(node: MenuNode): string[] {
-  const perms: string[] = [];
-  const visit = (n: MenuNode) => {
-    if (n.perm) perms.push(n.perm);
-    for (const c of n.children ?? []) visit(c);
-  };
-  visit(node);
-  return Array.from(new Set(perms));
+// --- select-all / expand-collapse ---
+function allKeys(): string[] {
+  const keys: string[] = [];
+  walk(props.menus, (n) => keys.push(n.key));
+  return keys;
+}
+function checkAll(value: boolean) {
+  if (props.role.built_in) return;
+  checkedKeys.value = value ? allKeys() : [];
 }
 
-function findNode(key: string): MenuNode | null {
-  let found: MenuNode | null = null;
-  walk(props.menus, (n) => { if (n.key === key) found = n; });
-  return found;
+// dirty when the checked-key set or the data-scope/dept selection differs.
+const dirty = computed(() => {
+  const cur = new Set(checkedKeys.value);
+  if (cur.size !== initialKeys.value.size) return true;
+  for (const k of cur) if (!initialKeys.value.has(k)) return true;
+  if (dataScope.value !== (props.role.data_scope ?? "all")) return true;
+  const origDepts = new Set(props.role.dept_ids ?? []);
+  const curDepts = new Set(dataScope.value === "custom" ? customDeptIds.value : []);
+  if (curDepts.size !== origDepts.size) return true;
+  for (const d of curDepts) if (!origDepts.has(d)) return true;
+  return false;
+});
+
+// Map a key set → the set of (resource:action) perms it covers (node + own perm).
+function permsForKeys(keys: Set<string>): Set<string> {
+  const perms = new Set<string>();
+  walk(props.menus, (n) => {
+    if (keys.has(n.key) && n.perm) perms.add(n.perm);
+  });
+  return perms;
 }
 
-async function onCheck(key: string, checked: boolean) {
-  const node = findNode(key);
-  if (!node) return;
-  const perms = collectPerms(node);
-  if (perms.length === 0) {
-    notify.warning("该目录节点没有可授予的权限");
-    return;
-  }
+async function save() {
+  if (props.role.built_in) return;
   busy.value = true;
   try {
-    for (const perm of perms) {
-      const [res, act] = splitPerm(perm);
-      if (checked) await addPolicy(props.role.id, res, act);
-      else await removePolicy(props.role.id, res, act);
+    // Diff perms: those newly covered → add, those no longer covered → remove.
+    const beforePerms = permsForKeys(initialKeys.value);
+    const afterPerms = permsForKeys(new Set(checkedKeys.value));
+    const add: PolicyChange[] = [];
+    const remove: PolicyChange[] = [];
+    for (const p of afterPerms) {
+      if (!beforePerms.has(p)) { const [r, a] = splitPerm(p); add.push({ resource: r, action: a }); }
     }
-    emit("changed"); // parent reloads roles so policies (and checkboxes) refresh
-  } catch (e: any) {
-    notify.error(e.response?.data?.error?.message ?? "权限更新失败");
-  } finally { busy.value = false; }
-}
-
-async function saveScope() {
-  busy.value = true;
-  try {
+    for (const p of beforePerms) {
+      if (!afterPerms.has(p)) { const [r, a] = splitPerm(p); remove.push({ resource: r, action: a }); }
+    }
+    if (add.length || remove.length) {
+      await batchPolicy(props.role.id, { add, remove });
+    }
+    // Persist data scope (and custom dept ids) in the same save action.
     await updateRole(props.role.id, {
       data_scope: dataScope.value,
       dept_ids: dataScope.value === "custom" ? customDeptIds.value : [],
     });
-    notify.success("数据范围已保存");
-    emit("changed");
+    notify.success("角色设置已保存");
+    emit("changed"); // parent reloads roles; reset() re-seeds via the role watcher
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "保存失败");
   } finally { busy.value = false; }
@@ -205,10 +288,20 @@ function walk(nodes: MenuNode[], fn: (n: MenuNode) => void) {
 .tag-builtin { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--purple-soft); color: var(--purple); border-radius: 3px; }
 .re-sub { font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
 
+.builtin-note { font-size: 12.5px; color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .editor-body { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: start; }
 .re-section { display: flex; flex-direction: column; gap: 8px; }
-.re-section-head { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .4px; }
+.re-section.locked { opacity: .7; }
+.re-section-head { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .4px; display: flex; align-items: center; justify-content: space-between; }
+.tree-tools { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; }
+.link-btn { border: 0; background: none; color: var(--primary); font-size: 11.5px; cursor: pointer; padding: 2px 4px; }
+.link-btn:hover:not(:disabled) { text-decoration: underline; }
+.link-btn:disabled { color: var(--text-4); cursor: not-allowed; }
+.tool-sep { color: var(--border-strong); font-size: 11px; }
 .menu-tree-box { border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 440px; overflow-y: auto; background: var(--surface); }
+.dept-search { width: 100%; padding: 6px 10px; font-size: 12.5px; box-sizing: border-box; margin-bottom: 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
+.dept-search:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.dept-tree-box { border: 1px solid var(--border); border-radius: 8px; padding: 6px; max-height: 220px; overflow-y: auto; background: var(--surface); }
 .empty-hint { color: var(--text-4); font-size: 12.5px; padding: 12px; }
 .menu-node { display: inline-flex; align-items: center; gap: 6px; }
 .menu-node.dir { font-weight: 600; }
