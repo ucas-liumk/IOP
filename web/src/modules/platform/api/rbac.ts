@@ -9,12 +9,12 @@ export interface PlatformRole {
   member_count: number; policies: PolicyRule[] | null; members: string[];
 }
 export interface RbacMe {
-  roles: string[]; permissions: string[]; is_super_admin: boolean; governance_mode: "single_admin" | "three_member";
+  roles: string[]; permissions: string[]; is_super_admin: boolean;
 }
 
 export async function getRbacMe(): Promise<RbacMe> {
   const r = await client.get("/platform/rbac/me");
-  return r.data?.data ?? { roles: [], permissions: [], is_super_admin: false, governance_mode: "single_admin" };
+  return r.data?.data ?? { roles: [], permissions: [], is_super_admin: false };
 }
 export async function listPlatformPermissions(): Promise<PlatformPermission[]> {
   const r = await client.get("/platform/rbac/permissions");
@@ -41,7 +41,4 @@ export async function grantPlatformRole(id: string, platform_user_id: string) {
 }
 export async function revokePlatformRole(id: string, uid: string) {
   await client.delete(`/platform/rbac/roles/${id}/members/${uid}`);
-}
-export async function setGovernanceMode(mode: "single_admin" | "three_member") {
-  await client.put("/platform/rbac/governance-mode", { mode });
 }

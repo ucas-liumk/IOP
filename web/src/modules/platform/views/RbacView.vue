@@ -1,12 +1,9 @@
 <template>
   <section class="rbac">
     <div v-if="pageError" class="page-error">{{ pageError }}</div>
-    <PageHeader title="权限管理" :sub="`三员分立 · 当前治理模式：${modeLabel}`">
+    <PageHeader title="权限管理" sub="平台角色 · 用户 → 角色 →（菜单权限 + 数据范围）">
       <template #actions>
         <div class="head-actions">
-          <button class="btn" @click="toggleMode" :disabled="!me.is_super_admin">
-            切换为{{ me.governance_mode === 'three_member' ? '单一超管' : '三员分立' }}模式
-          </button>
           <button class="btn btn-primary" @click="showCreate = !showCreate">+ 新建角色</button>
         </div>
       </template>
@@ -30,7 +27,7 @@
         </div>
         <div class="role-meta">{{ r.member_count }} 名成员</div>
         <div class="policies">
-          <span v-if="r.code === 'super_admin'" class="no-pol">★ 全权（受三员模式约束）</span>
+          <span v-if="r.code === 'super_admin'" class="no-pol">★ 全权</span>
           <span v-else-if="!r.policies?.length" class="no-pol">尚无权限</span>
           <span v-for="p in (r.policies ?? [])" :key="`${p.resource}:${p.action}`" class="pol-chip">
             {{ p.resource }}<span class="sep">/</span>{{ p.action }}
@@ -78,7 +75,7 @@ import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
 import {
   getRbacMe, listPlatformRoles, listPlatformPermissions, createPlatformRole,
-  deletePlatformRole, addPlatformPolicy, removePlatformPolicy, setGovernanceMode,
+  deletePlatformRole, addPlatformPolicy, removePlatformPolicy,
   grantPlatformRole, revokePlatformRole,
   type PlatformRole, type PlatformPermission, type RbacMe,
 } from "../api/rbac";
@@ -89,7 +86,7 @@ const { confirm } = useConfirm();
 
 const roles = ref<PlatformRole[]>([]);
 const perms = ref<PlatformPermission[]>([]);
-const me = ref<RbacMe>({ roles: [], permissions: [], is_super_admin: false, governance_mode: "single_admin" });
+const me = ref<RbacMe>({ roles: [], permissions: [], is_super_admin: false });
 const users = ref<PlatformUser[]>([]);
 const showCreate = ref(false);
 const saving = ref(false);
@@ -98,7 +95,6 @@ const newPol = reactive<Record<string, { key: string }>>({});
 const newMember = reactive<Record<string, string>>({});
 const pageError = ref("");
 
-const modeLabel = computed(() => (me.value.governance_mode === "three_member" ? "三员分立（严格）" : "单一超管"));
 const byDomain = computed(() => {
   const m: Record<string, PlatformPermission[]> = {};
   for (const p of perms.value) (m[p.domain] ??= []).push(p);
@@ -163,12 +159,6 @@ async function revokeMember(r: PlatformRole, uid: string) {
   if (!(await confirm({ title: "移除成员", message: "确认移除该成员？", danger: true }))) return;
   try { await revokePlatformRole(r.id, uid); await reload(); }
   catch (e: any) { notify.error(e.response?.data?.error?.message ?? "移除失败"); }
-}
-async function toggleMode() {
-  const next = me.value.governance_mode === "three_member" ? "single_admin" : "three_member";
-  if (!(await confirm({ title: "切换治理模式", message: `确认切换为「${next === 'three_member' ? '三员分立' : '单一超管'}」？`, danger: next === "three_member" }))) return;
-  try { await setGovernanceMode(next); await reload(); notify.success("已切换"); }
-  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "切换失败"); }
 }
 </script>
 
