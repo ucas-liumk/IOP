@@ -15,10 +15,10 @@ export interface BulkRowError { row: number; key?: string; message: string }
 export interface BulkResult { total: number; succeeded: number; failed: number; errors: BulkRowError[] }
 export interface PolicyChange { resource: string; action: string }
 
-// Triggers a browser download for a CSV blob fetched from `path` (responseType
+// Triggers a browser download for a blob fetched from `path` (responseType
 // blob). Falls back to a sensible default filename when none is provided.
-async function downloadCsv(path: string, filename: string): Promise<void> {
-  const res = await client.get(path, { responseType: "blob" });
+async function downloadFile(path: string, filename: string, params?: Record<string, string | number | boolean | undefined>): Promise<void> {
+  const res = await client.get(path, { responseType: "blob", params });
   const url = URL.createObjectURL(res.data as Blob);
   const a = document.createElement("a");
   a.href = url;
@@ -111,10 +111,10 @@ export async function listMembersPaged(p: ListMembersPagedParams = {}): Promise<
 
 // Member CSV export / template download + import (member:write gated server-side).
 export function downloadMembersCsv(): Promise<void> {
-  return downloadCsv("/admin/members/export", "members.csv");
+  return downloadFile("/admin/members/export", "members.csv");
 }
 export function downloadMembersTemplate(): Promise<void> {
-  return downloadCsv("/admin/members/template", "members_template.csv");
+  return downloadFile("/admin/members/template", "members_template.csv");
 }
 export function importMembers(file: File): Promise<BulkResult> {
   return uploadCsv("/admin/members/import", file);
@@ -143,36 +143,49 @@ export async function removeMemberPost(memberId: string, postId: string) {
 // === Departments (部门) ===
 export interface Dept {
   id: string;
+  tenant_id: string;
   name: string;
+  org_code: string;
   parent_id?: string | null;
+  org_type: string;
   order_num: number;
   leader?: string;
+  leader_account?: string;
   phone?: string;
   email?: string;
   status: string;
+  remark?: string;
+  path?: string;
   is_root?: boolean;
   created_at: string;
 }
 export interface DeptTreeNode extends Dept {
   children?: DeptTreeNode[];
 }
-export async function listDepts(): Promise<Dept[]> {
-  const r = await client.get("/admin/depts");
+export interface DeptQuery {
+  search?: string;
+  status?: string;
+}
+export async function listDepts(params: DeptQuery = {}): Promise<Dept[]> {
+  const r = await client.get("/admin/depts", { params });
   return r.data?.data?.depts ?? [];
 }
-export async function getDeptTree(): Promise<DeptTreeNode[]> {
-  const r = await client.get("/admin/depts/tree");
+export async function getDeptTree(params: DeptQuery = {}): Promise<DeptTreeNode[]> {
+  const r = await client.get("/admin/depts/tree", { params });
   return r.data?.data?.tree ?? [];
 }
 export async function createDept(payload: {
-  name: string; parent_id?: string | null; order_num?: number;
-  leader?: string; phone?: string; email?: string;
+  name: string; org_code: string; parent_id?: string | null; org_type?: string; order_num?: number;
+  leader?: string; leader_account?: string; phone?: string; email?: string; status?: string; remark?: string;
 }): Promise<Dept> {
   const r = await client.post("/admin/depts", payload);
   return r.data?.data as Dept;
 }
-export async function updateDept(id: string, patch: Partial<Pick<Dept, "name" | "order_num" | "leader" | "phone" | "email" | "status">>) {
+export async function updateDept(id: string, patch: Partial<Pick<Dept, "name" | "org_code" | "parent_id" | "org_type" | "order_num" | "leader" | "leader_account" | "phone" | "email" | "status" | "remark">>) {
   await client.patch(`/admin/depts/${id}`, patch);
+}
+export async function setDeptStatus(id: string, status: string, cascade = false) {
+  await client.post(`/admin/depts/${id}/status`, { status, cascade });
 }
 export async function deleteDept(id: string) {
   await client.delete(`/admin/depts/${id}`);
@@ -182,11 +195,11 @@ export async function moveDept(id: string, parentId: string | null) {
 }
 
 // Department CSV export / template download + import (dept:write gated server-side).
-export function downloadDeptsCsv(): Promise<void> {
-  return downloadCsv("/admin/depts/export", "departments.csv");
+export function downloadDeptsCsv(params: DeptQuery = {}): Promise<void> {
+  return downloadFile("/admin/depts/export", "departments.xlsx", params);
 }
 export function downloadDeptsTemplate(): Promise<void> {
-  return downloadCsv("/admin/depts/template", "departments_template.csv");
+  return downloadFile("/admin/depts/template", "departments_template.xlsx");
 }
 export function importDepts(file: File): Promise<BulkResult> {
   return uploadCsv("/admin/depts/import", file);

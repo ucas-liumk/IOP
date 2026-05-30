@@ -116,7 +116,7 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 		        m.status, to_char(m.joined_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM member m
 		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
-		 LEFT JOIN department d ON d.id = m.dept_id
+		 LEFT JOIN department d ON d.id = m.dept_id AND d.deleted_at IS NULL
 		 WHERE 1=1`+where+fmt.Sprintf(`
 		 ORDER BY m.joined_at DESC
 		 LIMIT $%d OFFSET $%d`, fidx, fidx+1), args...)
@@ -229,13 +229,16 @@ func (s *Service) UpdateMember(ctx context.Context, pool *pgxpool.Pool, t *Tenan
 	}
 	if cmd.SetDept {
 		if cmd.DeptID != nil {
-			// Validate the target department exists in this tenant schema.
+			// Validate the target department exists and is assignable in this tenant schema.
 			var count int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM department WHERE id = $1`, *cmd.DeptID).Scan(&count); err != nil {
+			if err := tx.QueryRow(ctx,
+				`SELECT count(*) FROM department
+				 WHERE id = $1 AND deleted_at IS NULL AND status = 'active'`,
+				*cmd.DeptID).Scan(&count); err != nil {
 				return err
 			}
 			if count == 0 {
-				return errors.New(errors.KindParam, "tenancy.dept_not_found", "部门不存在")
+				return errors.New(errors.KindParam, "tenancy.dept_not_assignable", "部门不存在或已停用")
 			}
 		}
 		sets = append(sets, fmt.Sprintf("dept_id = $%d", idx))

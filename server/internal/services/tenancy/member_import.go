@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/leo/iop/server/internal/shared/errors"
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
@@ -52,7 +53,7 @@ func (s *Service) ExportMembers(ctx context.Context, pool *pgxpool.Pool, t *Tena
 		        COALESCE(d.name, m.department, ''), COALESCE(m.title,''), m.status
 		 FROM member m
 		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
-		 LEFT JOIN department d ON d.id = m.dept_id
+		 LEFT JOIN department d ON d.id = m.dept_id AND d.deleted_at IS NULL
 		 ORDER BY m.joined_at DESC`)
 	if err != nil {
 		return nil, err
@@ -82,6 +83,9 @@ func (s *Service) DeptNameToID(ctx context.Context, pool *pgxpool.Pool, t *Tenan
 	}
 	m := make(map[string]kernel.ID, len(flat))
 	for _, d := range flat {
+		if d.Status != "active" {
+			continue
+		}
 		m[d.Name] = d.ID
 	}
 	return m, nil
@@ -102,6 +106,18 @@ func (s *Service) SetMemberDept(ctx context.Context, pool *pgxpool.Pool, t *Tena
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return err
+	}
+	if deptID != nil {
+		var count int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM department
+			 WHERE id = $1 AND deleted_at IS NULL AND status = 'active'`,
+			*deptID).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return errors.New(errors.KindParam, "tenancy.dept_not_assignable", "部门不存在或已停用")
+		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE member SET dept_id = $1 WHERE id = $2`, idPtrOrNil(deptID), memberID); err != nil {
 		return err

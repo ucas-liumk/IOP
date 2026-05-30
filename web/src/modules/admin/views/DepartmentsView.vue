@@ -13,20 +13,21 @@
 <script setup lang="ts">
 import { PageHeader, DeptTreeManager, type DeptApi } from "@/shell/components";
 import {
-  getDeptTree, listDepts, createDept, updateDept, deleteDept, moveDept,
+  getDeptTree, listDepts, createDept, updateDept, setDeptStatus, deleteDept, moveDept,
   downloadDeptsCsv,
 } from "../api/admin";
 
 // Tenant-console dept adapter — drives the shared DeptTreeManager against this
 // org's own /admin/depts* endpoints (tenant context resolved server-side).
 const deptApi: DeptApi = {
-  fetchTree: () => getDeptTree(),
-  fetchFlat: () => listDepts(),
+  fetchTree: (p) => getDeptTree(p),
+  fetchFlat: (p) => listDepts(p),
   create: (p) => createDept(p),
   update: (id, patch) => updateDept(id, patch),
+  setStatus: (id, status, cascade) => setDeptStatus(id, status, cascade),
   remove: (id) => deleteDept(id),
   move: (id, parentId) => moveDept(id, parentId),
-  exportCsv: () => downloadDeptsCsv(),
+  exportCsv: (p) => downloadDeptsCsv(p),
 };
 </script>
 

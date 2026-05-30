@@ -50,20 +50,19 @@ func orgTenantFromParam(c *gin.Context, svc *Service) (*Tenant, bool) {
 // (ListDepts/DeptTree/CreateDept/UpdateDept/DeleteDept/MoveDept/ExportDepts/
 // DeptTemplateRows/ImportDepts) — only the tenant resolution differs.
 func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
-	// CSV export / template / import. Registered before the parameterized :id
-	// routes so the literal sub-paths take precedence (gin's tree disallows a
-	// param segment colliding with a static one at the same position).
+	// Export / template / import. Registered before the parameterized :id routes
+	// so the literal sub-paths take precedence.
 	r.GET("/platform/orgs/:tid/depts/export", authz("org", "read"), func(c *gin.Context) {
 		t, ok := orgTenantFromParam(c, svc)
 		if !ok {
 			return
 		}
-		rows, err := svc.ExportDepts(c.Request.Context(), pool, t)
+		rows, err := svc.ExportDepts(c.Request.Context(), pool, t, deptFilterFromQuery(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.CSV(c, "departments.csv", rows)
+		apiresp.XLSX(c, "departments.xlsx", rows)
 	})
 
 	r.GET("/platform/orgs/:tid/depts/template", authz("org", "read"), func(c *gin.Context) {
@@ -72,7 +71,7 @@ func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.P
 		if _, ok := orgTenantFromParam(c, svc); !ok {
 			return
 		}
-		apiresp.CSV(c, "departments_template.csv", DeptTemplateRows())
+		apiresp.XLSX(c, "departments_template.xlsx", DeptTemplateRows())
 	})
 
 	r.POST("/platform/orgs/:tid/depts/import", authz("org", "write"), func(c *gin.Context) {
@@ -80,12 +79,12 @@ func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.P
 		if !ok {
 			return
 		}
-		records, err := apiresp.ParseCSVUpload(c, "file")
+		records, err := apiresp.ParseTabularUpload(c, "file")
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		res, err := svc.ImportDepts(c.Request.Context(), pool, t, records)
+		res, err := svc.ImportDepts(c.Request.Context(), pool, t, records, dryRunFromRequest(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -98,7 +97,7 @@ func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.P
 		if !ok {
 			return
 		}
-		depts, err := svc.ListDepts(c.Request.Context(), pool, t)
+		depts, err := svc.ListDeptsFiltered(c.Request.Context(), pool, t, deptFilterFromQuery(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -111,7 +110,7 @@ func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.P
 		if !ok {
 			return
 		}
-		tree, err := svc.DeptTree(c.Request.Context(), pool, t)
+		tree, err := svc.DeptTreeFiltered(c.Request.Context(), pool, t, deptFilterFromQuery(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -119,34 +118,38 @@ func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.P
 		apiresp.OK(c, gin.H{"tree": tree})
 	})
 
+	r.GET("/platform/orgs/:tid/depts/:id", authz("org", "read"), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
+			return
+		}
+		dept, err := svc.GetDept(c.Request.Context(), pool, t, id)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, dept)
+	})
+
 	r.POST("/platform/orgs/:tid/depts", authz("org", "write"), func(c *gin.Context) {
 		t, ok := orgTenantFromParam(c, svc)
 		if !ok {
 			return
 		}
-		var req struct {
-			Name     string  `json:"name" binding:"required"`
-			ParentID *string `json:"parent_id"`
-			OrderNum int     `json:"order_num"`
-			Leader   string  `json:"leader"`
-			Phone    string  `json:"phone"`
-			Email    string  `json:"email"`
-		}
+		var req deptCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
 			return
 		}
-		cmd := CreateDeptCmd{
-			Name: req.Name, OrderNum: req.OrderNum,
-			Leader: req.Leader, Phone: req.Phone, Email: req.Email,
-		}
-		if req.ParentID != nil && *req.ParentID != "" {
-			pid, err := kernel.ParseID(*req.ParentID)
-			if err != nil {
-				apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_parent_id", "parent_id 无效", err))
-				return
-			}
-			cmd.ParentID = &pid
+		cmd, err := createDeptCmdFromRequest(req)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
 		}
 		dept, err := svc.CreateDept(c.Request.Context(), pool, t, cmd)
 		if err != nil {
@@ -166,22 +169,50 @@ func RegisterPlatformOrgRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.P
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
 			return
 		}
-		var req struct {
-			Name     *string `json:"name"`
-			OrderNum *int    `json:"order_num"`
-			Leader   *string `json:"leader"`
-			Phone    *string `json:"phone"`
-			Email    *string `json:"email"`
-			Status   *string `json:"status"`
-		}
+		var req deptPatchRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
 			return
 		}
 		if err := svc.UpdateDept(c.Request.Context(), pool, t, UpdateDeptCmd{
-			DeptID: id, Name: req.Name, OrderNum: req.OrderNum,
-			Leader: req.Leader, Phone: req.Phone, Email: req.Email, Status: req.Status,
+			DeptID: id, Name: req.Name, OrgCode: req.OrgCode, OrgType: req.OrgType,
+			OrderNum: req.OrderNum, Leader: req.Leader, LeaderAccount: req.LeaderAccount,
+			Phone: req.Phone, Email: req.Email, Status: req.Status, Remark: req.Remark,
 		}); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if parentID, present, err := parseOptionalID(req.ParentID); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_parent_id", "parent_id 无效", err))
+			return
+		} else if present {
+			if err := svc.MoveDept(c.Request.Context(), pool, t, id, parentID); err != nil {
+				apiresp.Fail(c, err)
+				return
+			}
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/orgs/:tid/depts/:id/status", authz("org", "write"), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
+			return
+		}
+		var req struct {
+			Status  string `json:"status" binding:"required"`
+			Cascade bool   `json:"cascade"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.SetDeptStatus(c.Request.Context(), pool, t, id, req.Status, req.Cascade); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}

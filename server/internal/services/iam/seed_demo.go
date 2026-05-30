@@ -126,14 +126,13 @@ func SeedDemoOrg(ctx context.Context, s *Service, tenants *tenancy.Service, pool
 	}
 
 	// 2. Seed department tree (deterministic UUIDs, ON CONFLICT DO NOTHING).
-	deptCount, err := seedDemoDepts(ctx, pool, t.SchemaName)
+	deptCount, rootID, err := seedDemoDepts(ctx, pool, t)
 	if err != nil {
 		return fmt.Errorf("demo seed: depts: %w", err)
 	}
 
 	// Departments eligible to receive members: every node except the root org node.
 	// Iterate the tree (deterministic order) rather than the map so assignment is stable.
-	rootID := deptID("/" + demoTenantName)
 	leafCandidates := collectAssignableDepts()
 
 	// 3. Seed members. bjadmin → tenant_admin; the rest → tenant_member.
@@ -213,19 +212,28 @@ func collectAssignableDepts() []kernel.ID {
 // number of departments newly inserted. Uses deterministic ids keyed by full path
 // (so 处室 with duplicate short names under different 委办局 don't collide) and
 // ON CONFLICT (id) DO NOTHING so re-runs are no-ops.
-func seedDemoDepts(ctx context.Context, pool *pgxpool.Pool, schema string) (int, error) {
+func seedDemoDepts(ctx context.Context, pool *pgxpool.Pool, t *tenancy.Tenant) (int, kernel.ID, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer conn.Release()
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", schema)); err != nil {
-		return 0, err
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
+		return 0, "", err
+	}
+	var rootID kernel.ID
+	if err := tx.QueryRow(ctx,
+		`SELECT id
+		 FROM department
+		 WHERE tenant_id = $1 AND is_root = TRUE AND deleted_at IS NULL
+		 ORDER BY created_at ASC
+		 LIMIT 1`, t.ID).Scan(&rootID); err != nil {
+		return 0, "", err
 	}
 
 	count := 0
@@ -237,10 +245,12 @@ func seedDemoDepts(ctx context.Context, pool *pgxpool.Pool, schema string) (int,
 		if parent != nil {
 			parentArg = string(*parent)
 		}
+		code := "ORG-" + strings.ToUpper(strings.ReplaceAll(string(id), "-", "")[:12])
 		ct, err := tx.Exec(ctx,
-			`INSERT INTO department (id, name, parent_id, order_num, status)
-			 VALUES ($1, $2, $3, $4, 'active') ON CONFLICT (id) DO NOTHING`,
-			string(id), node.name, parentArg, order)
+			`INSERT INTO department (id, tenant_id, name, org_code, parent_id, org_type, order_num, status, is_root)
+			 VALUES ($1, $2, $3, $4, $5, 'department', $6, 'active', FALSE)
+			 ON CONFLICT (id) DO NOTHING`,
+			string(id), t.ID, node.name, code, parentArg, order)
 		if err != nil {
 			return err
 		}
@@ -254,13 +264,15 @@ func seedDemoDepts(ctx context.Context, pool *pgxpool.Pool, schema string) (int,
 		}
 		return nil
 	}
-	if err := insert(demoOrgTree, nil, "", 0); err != nil {
-		return 0, err
+	for i, ch := range demoOrgTree.children {
+		if err := insert(ch, &rootID, "/"+demoOrgTree.name, i+1); err != nil {
+			return 0, "", err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return count, nil
+	return count, rootID, nil
 }
 
 type seedMemberArgs struct {

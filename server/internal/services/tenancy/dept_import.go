@@ -12,36 +12,43 @@ import (
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
-// deptCSVHeader is the column order for department export/import/template.
-var deptCSVHeader = []string{"name", "parent_name", "order_num", "leader", "phone", "email", "status"}
-
-// deptTemplateRows are the two illustrative sample rows in the import template.
-var deptTemplateRows = [][]string{
-	{"技术部", "", "1", "张三", "13800000001", "tech@example.com", "active"},
-	{"后端组", "技术部", "1", "李四", "13800000002", "backend@example.com", "active"},
+var deptImportHeader = []string{
+	"org_name", "org_code", "parent_org_code", "org_type",
+	"leader_account", "phone", "order_num", "status", "remark",
 }
 
-// ExportDepts returns every department of the current tenant as CSV rows (header
-// first). parent_name is resolved to the parent's display name (blank for roots).
-func (s *Service) ExportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) ([][]string, error) {
-	flat, err := s.ListDepts(ctx, pool, t)
+var deptExportHeader = []string{
+	"org_name", "org_code", "parent_org_code", "org_type",
+	"leader", "leader_account", "phone", "order_num", "status", "remark", "path",
+}
+
+var deptTemplateRows = [][]string{
+	{"技术部", "TECH", "ROOT", "department", "zhangsan", "13800000001", "1", "active", "一级部门"},
+	{"后端组", "TECH-BE", "TECH", "team", "lisi", "13800000002", "1", "active", "二级小组"},
+}
+
+// ExportDepts returns organizations for the current tenant as spreadsheet rows.
+// The tenant is server-resolved; callers cannot widen scope by passing tenant_id.
+func (s *Service) ExportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant, filter DeptListFilter) ([][]string, error) {
+	flat, err := s.ListDeptsFiltered(ctx, pool, t, filter)
 	if err != nil {
 		return nil, err
 	}
-	nameByID := make(map[kernel.ID]string, len(flat))
+	codeByID := make(map[kernel.ID]string, len(flat))
 	for _, d := range flat {
-		nameByID[d.ID] = d.Name
+		codeByID[d.ID] = d.OrgCode
 	}
 	out := make([][]string, 0, len(flat)+1)
-	out = append(out, append([]string(nil), deptCSVHeader...))
+	out = append(out, append([]string(nil), deptExportHeader...))
 	for _, d := range flat {
-		parentName := ""
+		parentCode := ""
 		if d.ParentID != nil {
-			parentName = nameByID[*d.ParentID]
+			parentCode = codeByID[*d.ParentID]
 		}
 		out = append(out, []string{
-			d.Name, parentName, strconv.Itoa(d.OrderNum),
-			d.Leader, d.Phone, d.Email, d.Status,
+			d.Name, d.OrgCode, parentCode, d.OrgType,
+			d.Leader, d.LeaderAccount, d.Phone, strconv.Itoa(d.OrderNum),
+			d.Status, d.Remark, d.Path,
 		})
 	}
 	return out, nil
@@ -50,76 +57,30 @@ func (s *Service) ExportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 // DeptTemplateRows returns the header + sample rows for the import template.
 func DeptTemplateRows() [][]string {
 	out := make([][]string, 0, len(deptTemplateRows)+1)
-	out = append(out, append([]string(nil), deptCSVHeader...))
+	out = append(out, append([]string(nil), deptImportHeader...))
 	out = append(out, deptTemplateRows...)
 	return out
 }
 
-// deptImportRow is a parsed CSV department row plus its source line number.
 type deptImportRow struct {
-	row        int // 1-based data line (header excluded)
-	name       string
-	parentName string
-	orderNum   int
-	leader     string
-	phone      string
-	email      string
-	status     string
+	row           int
+	name          string
+	orgCode       string
+	parentOrgCode string
+	orgType       string
+	leaderAccount string
+	phone         string
+	orderNum      int
+	status        string
+	remark        string
 }
 
-// ImportDepts bulk-creates departments from parsed CSV records (the first record
-// is the header). Parents are resolved by name across the existing tree AND the
-// rows being imported, using a multi-pass (topological) insert so a child may
-// reference a parent defined later in the file. Validation failures (missing name,
-// unknown parent, would-be cycle) are recorded per-row; the whole import runs in
-// one transaction and never 500s on bad data — partial success is the norm.
-func (s *Service) ImportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant, records [][]string) (*kernel.BulkResult, error) {
+// ImportDepts validates then bulk-creates organizations. It is all-or-nothing:
+// any validation or persistence error prevents partial tree writes. dryRun runs
+// every validation without inserting.
+func (s *Service) ImportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant, records [][]string, dryRun bool) (*kernel.BulkResult, error) {
 	res := kernel.NewBulkResult()
-	if len(records) == 0 {
-		return res, nil
-	}
-	// Skip the header row if it looks like one (first column "name").
-	dataRecords := records
-	if len(records) > 0 && strings.EqualFold(strings.TrimSpace(firstCol(records[0])), "name") {
-		dataRecords = records[1:]
-	}
-
-	parsed := make([]deptImportRow, 0, len(dataRecords))
-	for i, rec := range dataRecords {
-		lineNo := i + 1
-		res.Total++
-		name := strings.TrimSpace(col(rec, 0))
-		if name == "" {
-			res.Fail(lineNo, "", "部门名称不能为空")
-			continue
-		}
-		order := 0
-		if v := strings.TrimSpace(col(rec, 2)); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				res.Fail(lineNo, name, "order_num 必须是整数")
-				continue
-			}
-			order = n
-		}
-		status := strings.TrimSpace(col(rec, 6))
-		if status == "" {
-			status = "active"
-		}
-		if status != "active" && status != "disabled" {
-			res.Fail(lineNo, name, "status 只能是 active 或 disabled")
-			continue
-		}
-		parsed = append(parsed, deptImportRow{
-			row: lineNo, name: name,
-			parentName: strings.TrimSpace(col(rec, 1)),
-			orderNum:   order,
-			leader:     strings.TrimSpace(col(rec, 3)),
-			phone:      strings.TrimSpace(col(rec, 4)),
-			email:      strings.TrimSpace(col(rec, 5)),
-			status:     status,
-		})
-	}
+	parsed := parseDeptImportRows(records, res)
 	if len(parsed) == 0 {
 		return res, nil
 	}
@@ -137,90 +98,210 @@ func (s *Service) ImportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return nil, err
 	}
-	rootID, err := rootDeptID(ctx, tx, t)
-	if err != nil {
+	if _, err := rootDeptID(ctx, tx, t); err != nil {
 		return nil, err
 	}
 
-	// Seed the known-name → id map from existing departments so children can attach
-	// to an already-persisted parent.
+	codeToID := map[string]kernel.ID{}
 	rows, err := tx.Query(ctx,
-		`SELECT id, name FROM department
+		`SELECT id, org_code
+		 FROM department
 		 WHERE tenant_id = $1 AND deleted_at IS NULL`, t.ID)
 	if err != nil {
 		return nil, err
 	}
-	nameToID := map[string]kernel.ID{}
 	for rows.Next() {
 		var id kernel.ID
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
+		var code string
+		if err := rows.Scan(&id, &code); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		nameToID[name] = id
+		codeToID[lowerCode(code)] = id
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Multi-pass insert: a row whose parent_name is blank or already resolvable is
-	// inserted; rows whose parent is not yet known are deferred to a later pass.
-	// We stop when a full pass makes no progress — any rows still pending then have
-	// an unresolvable (missing or cyclic) parent.
-	pending := parsed
+	importByCode := map[string]deptImportRow{}
+	for _, r := range parsed {
+		key := lowerCode(r.orgCode)
+		if _, ok := importByCode[key]; ok {
+			res.Fail(r.row, r.orgCode, "文件内组织编码重复")
+			continue
+		}
+		importByCode[key] = r
+	}
+	for _, r := range parsed {
+		key := lowerCode(r.orgCode)
+		if _, exists := codeToID[key]; exists {
+			res.Fail(r.row, r.orgCode, "同一租户内组织编码已存在")
+		}
+		if strings.TrimSpace(r.parentOrgCode) == "" {
+			res.Fail(r.row, r.orgCode, "根组织已由租户创建，不能导入第二个根组织；请填写父级组织编码")
+			continue
+		}
+		parentKey := lowerCode(r.parentOrgCode)
+		if parentKey == key {
+			res.Fail(r.row, r.orgCode, "组织不能以自身为父级")
+			continue
+		}
+		if _, ok := codeToID[parentKey]; !ok {
+			if _, ok := importByCode[parentKey]; !ok {
+				res.Fail(r.row, r.orgCode, fmt.Sprintf("父级组织编码 %q 不存在", r.parentOrgCode))
+			}
+		}
+	}
+	failImportCycles(parsed, importByCode, res)
+	if res.Failed > 0 {
+		if dryRun {
+			res.Succeeded = res.Total - res.Failed
+		}
+		return res, nil
+	}
+	if dryRun {
+		res.Succeeded = res.Total
+		return res, nil
+	}
+
+	pending := append([]deptImportRow(nil), parsed...)
 	for len(pending) > 0 {
 		progressed := false
-		var next []deptImportRow
+		next := []deptImportRow{}
 		for _, r := range pending {
-			var parentID *kernel.ID
-			if r.parentName != "" {
-				if r.parentName == r.name {
-					res.Fail(r.row, r.name, "部门不能以自身为父部门")
-					progressed = true
-					continue
-				}
-				pid, ok := nameToID[r.parentName]
-				if !ok {
-					next = append(next, r) // parent maybe defined later
-					continue
-				}
-				parentID = &pid
-			} else {
-				parentID = &rootID
+			parentID, ok := codeToID[lowerCode(r.parentOrgCode)]
+			if !ok {
+				next = append(next, r)
+				continue
 			}
 			id := kernel.NewID()
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO department (id, tenant_id, name, parent_id, order_num, leader, phone, email, status, is_root)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false)`,
-				id, t.ID, r.name, idPtrOrNil(parentID), r.orderNum,
-				nullStr(r.leader), nullStr(r.phone), nullStr(r.email), r.status); err != nil {
-				res.Fail(r.row, r.name, "写入失败: "+err.Error())
-				progressed = true
-				continue
+				`INSERT INTO department (
+				    id, tenant_id, name, org_code, parent_id, org_type, order_num,
+				    leader_account, phone, status, remark, is_root
+				 )
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false)`,
+				id, t.ID, r.name, r.orgCode, parentID, r.orgType, r.orderNum,
+				nullStr(r.leaderAccount), nullStr(r.phone), r.status, nullStr(r.remark)); err != nil {
+				res.Failed = 0
+				res.Errors = nil
+				res.Fail(r.row, r.orgCode, "写入失败: "+err.Error())
+				res.Succeeded = 0
+				return res, nil
 			}
-			nameToID[r.name] = id
+			codeToID[lowerCode(r.orgCode)] = id
 			res.Ok()
 			progressed = true
 		}
 		pending = next
 		if !progressed {
-			break
+			for _, r := range pending {
+				res.Fail(r.row, r.orgCode, fmt.Sprintf("父级组织编码 %q 不存在或存在循环引用", r.parentOrgCode))
+			}
+			res.Succeeded = 0
+			return res, nil
 		}
 	}
-	// Anything still pending could not resolve its parent (missing or cyclic).
-	for _, r := range pending {
-		res.Fail(r.row, r.name, fmt.Sprintf("父部门 %q 不存在或存在循环引用", r.parentName))
-	}
-
 	if err := tx.Commit(ctx); err != nil {
-		return nil, errors.Wrap(errors.KindDatabase, "tenancy.import_depts_failed", "导入部门失败", err)
+		return nil, errors.Wrap(errors.KindDatabase, "tenancy.import_depts_failed", "导入组织失败", err)
 	}
+	_ = s.bus.Publish(ctx, "tenancy.dept_imported", map[string]any{
+		"tenant_id": t.ID, "succeeded": res.Succeeded,
+	})
 	return res, nil
 }
 
-// col returns the i-th field of rec, or "" if out of range.
+func parseDeptImportRows(records [][]string, res *kernel.BulkResult) []deptImportRow {
+	if len(records) == 0 {
+		return nil
+	}
+	start := 0
+	if isDeptHeader(records[0]) {
+		start = 1
+	}
+	parsed := make([]deptImportRow, 0, len(records)-start)
+	for i := start; i < len(records); i++ {
+		rec := records[i]
+		lineNo := i + 1
+		if emptyRecord(rec) {
+			continue
+		}
+		res.Total++
+		name := strings.TrimSpace(col(rec, 0))
+		code := strings.TrimSpace(col(rec, 1))
+		if name == "" {
+			res.Fail(lineNo, code, "组织名称不能为空")
+			continue
+		}
+		if code == "" {
+			res.Fail(lineNo, name, "组织编码不能为空")
+			continue
+		}
+		order := 0
+		if v := strings.TrimSpace(col(rec, 6)); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				res.Fail(lineNo, code, "order_num 必须是整数")
+				continue
+			}
+			order = n
+		}
+		status := normalizeDeptStatus(col(rec, 7))
+		if err := validateDeptStatus(status); err != nil {
+			res.Fail(lineNo, code, "status 只能是 active 或 disabled")
+			continue
+		}
+		parsed = append(parsed, deptImportRow{
+			row: lineNo, name: name, orgCode: code,
+			parentOrgCode: strings.TrimSpace(col(rec, 2)),
+			orgType:       normalizeOrgType(col(rec, 3)),
+			leaderAccount: strings.TrimSpace(col(rec, 4)),
+			phone:         strings.TrimSpace(col(rec, 5)),
+			orderNum:      order,
+			status:        status,
+			remark:        strings.TrimSpace(col(rec, 8)),
+		})
+	}
+	return parsed
+}
+
+func failImportCycles(rows []deptImportRow, byCode map[string]deptImportRow, res *kernel.BulkResult) {
+	for _, r := range rows {
+		seen := map[string]bool{}
+		cur := lowerCode(r.orgCode)
+		parent := lowerCode(r.parentOrgCode)
+		for parent != "" {
+			if parent == cur || seen[parent] {
+				res.Fail(r.row, r.orgCode, "导入数据存在循环父子关系")
+				break
+			}
+			seen[parent] = true
+			pr, ok := byCode[parent]
+			if !ok {
+				break
+			}
+			parent = lowerCode(pr.parentOrgCode)
+		}
+	}
+}
+
+func isDeptHeader(rec []string) bool {
+	c := strings.ToLower(strings.TrimSpace(firstCol(rec)))
+	return c == "org_name" || c == "name" || c == "组织名称"
+}
+
+func lowerCode(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+
+func emptyRecord(rec []string) bool {
+	for _, c := range rec {
+		if strings.TrimSpace(c) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func col(rec []string, i int) string {
 	if i < len(rec) {
 		return rec[i]

@@ -177,6 +177,8 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	auditSvc.Subscribe(bus, []string{
 		"tenancy.tenant_created", "tenancy.tenant_suspended", "tenancy.tenant_resumed",
 		"tenancy.tenant_closed", "tenancy.member_joined",
+		"tenancy.dept_created", "tenancy.dept_updated", "tenancy.dept_deleted",
+		"tenancy.dept_status_changed", "tenancy.dept_moved", "tenancy.dept_imported",
 		"iam.user_logged_in", "iam.user_logged_out", "iam.login_failed",
 		"okr.plan_created", "okr.plan_item_completed", "okr.plan_closed",
 		"okr.daily_submitted", "okr.weekly_submitted",

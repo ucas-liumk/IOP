@@ -1,6 +1,6 @@
 import { client } from "@/api/client";
 import type {
-  DeptApi, DeptRow, DeptTreeRow, CreateDeptPayload, UpdateDeptPatch,
+  DeptApi, DeptRow, DeptTreeRow, CreateDeptPayload, UpdateDeptPatch, DeptQuery,
   MemberApi, MemberPage, MemberListParams,
   MemberDeptRow, MemberDeptTreeRow, RoleRow, PostRow, MemberRow,
 } from "@/shell/components";
@@ -13,12 +13,12 @@ import { resetPlatformUserPassword } from "@/modules/admin/api/admin";
 
 const base = (tid: string) => `/platform/orgs/${tid}/depts`;
 
-export async function getOrgDeptTree(tid: string): Promise<DeptTreeRow[]> {
-  const r = await client.get(`${base(tid)}/tree`);
+export async function getOrgDeptTree(tid: string, params: DeptQuery = {}): Promise<DeptTreeRow[]> {
+  const r = await client.get(`${base(tid)}/tree`, { params });
   return r.data?.data?.tree ?? [];
 }
-export async function listOrgDepts(tid: string): Promise<DeptRow[]> {
-  const r = await client.get(base(tid));
+export async function listOrgDepts(tid: string, params: DeptQuery = {}): Promise<DeptRow[]> {
+  const r = await client.get(base(tid), { params });
   return r.data?.data?.depts ?? [];
 }
 export async function createOrgDept(tid: string, payload: CreateDeptPayload): Promise<DeptRow> {
@@ -28,6 +28,9 @@ export async function createOrgDept(tid: string, payload: CreateDeptPayload): Pr
 export async function updateOrgDept(tid: string, id: string, patch: UpdateDeptPatch): Promise<void> {
   await client.patch(`${base(tid)}/${id}`, patch);
 }
+export async function setOrgDeptStatus(tid: string, id: string, status: string, cascade = false): Promise<void> {
+  await client.post(`${base(tid)}/${id}/status`, { status, cascade });
+}
 export async function deleteOrgDept(tid: string, id: string): Promise<void> {
   await client.delete(`${base(tid)}/${id}`);
 }
@@ -36,12 +39,12 @@ export async function moveOrgDept(tid: string, id: string, parentId: string | nu
 }
 
 // CSV export → blob download.
-export async function downloadOrgDeptsCsv(tid: string): Promise<void> {
-  const res = await client.get(`${base(tid)}/export`, { responseType: "blob" });
+export async function downloadOrgDeptsCsv(tid: string, params: DeptQuery = {}): Promise<void> {
+  const res = await client.get(`${base(tid)}/export`, { responseType: "blob", params });
   const url = URL.createObjectURL(res.data as Blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "departments.csv";
+  a.download = "departments.xlsx";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -55,13 +58,14 @@ export const orgDeptImportUrl = (tid: string) => `${base(tid)}/import`;
 // Build a DeptApi adapter for a specific org, ready to bind to <DeptTreeManager>.
 export function orgDeptApi(tid: string): DeptApi {
   return {
-    fetchTree: () => getOrgDeptTree(tid),
-    fetchFlat: () => listOrgDepts(tid),
+    fetchTree: (p) => getOrgDeptTree(tid, p),
+    fetchFlat: (p) => listOrgDepts(tid, p),
     create: (p) => createOrgDept(tid, p),
     update: (id, patch) => updateOrgDept(tid, id, patch),
+    setStatus: (id, status, cascade) => setOrgDeptStatus(tid, id, status, cascade),
     remove: (id) => deleteOrgDept(tid, id),
     move: (id, parentId) => moveOrgDept(tid, id, parentId),
-    exportCsv: () => downloadOrgDeptsCsv(tid),
+    exportCsv: (p) => downloadOrgDeptsCsv(tid, p),
   };
 }
 

@@ -571,7 +571,10 @@ func (r *Repo) ResolveAssignees(ctx context.Context, tx pgx.Tx, tenantID, initia
 			return nil, err
 		}
 		var leaderName *string
-		if err := tx.QueryRow(ctx, `SELECT leader FROM department WHERE id=$1`, *deptID).Scan(&leaderName); err != nil {
+		if err := tx.QueryRow(ctx,
+			`SELECT leader FROM department
+			 WHERE id=$1 AND deleted_at IS NULL AND status='active'`,
+			*deptID).Scan(&leaderName); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, nil
 			}

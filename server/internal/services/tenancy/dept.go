@@ -17,16 +17,22 @@ import (
 
 // DeptRow is a flat department record.
 type DeptRow struct {
-	ID        kernel.ID  `json:"id"`
-	Name      string     `json:"name"`
-	ParentID  *kernel.ID `json:"parent_id,omitempty"`
-	OrderNum  int        `json:"order_num"`
-	Leader    string     `json:"leader,omitempty"`
-	Phone     string     `json:"phone,omitempty"`
-	Email     string     `json:"email,omitempty"`
-	Status    string     `json:"status"`
-	IsRoot    bool       `json:"is_root"`
-	CreatedAt string     `json:"created_at"`
+	ID            kernel.ID  `json:"id"`
+	TenantID      kernel.ID  `json:"tenant_id"`
+	Name          string     `json:"name"`
+	OrgCode       string     `json:"org_code"`
+	ParentID      *kernel.ID `json:"parent_id,omitempty"`
+	OrgType       string     `json:"org_type"`
+	OrderNum      int        `json:"order_num"`
+	Leader        string     `json:"leader,omitempty"`
+	LeaderAccount string     `json:"leader_account,omitempty"`
+	Phone         string     `json:"phone,omitempty"`
+	Email         string     `json:"email,omitempty"`
+	Status        string     `json:"status"`
+	Remark        string     `json:"remark,omitempty"`
+	Path          string     `json:"path,omitempty"`
+	IsRoot        bool       `json:"is_root"`
+	CreatedAt     string     `json:"created_at"`
 }
 
 // DeptTreeNode embeds DeptRow with nested children.
@@ -35,8 +41,21 @@ type DeptTreeNode struct {
 	Children []*DeptTreeNode `json:"children,omitempty"`
 }
 
+// DeptListFilter narrows organization listings. Tenant scope is deliberately not
+// caller-supplied; it always comes from the resolved Tenant.
+type DeptListFilter struct {
+	Search string
+	Status string
+}
+
 // ListDepts returns a flat list of departments ordered by order_num, name.
 func (s *Service) ListDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) ([]DeptRow, error) {
+	return s.ListDeptsFiltered(ctx, pool, t, DeptListFilter{})
+}
+
+// ListDeptsFiltered returns tenant-scoped organizations. Search/status matches
+// keep ancestors in the returned set so tree UIs can preserve the full path.
+func (s *Service) ListDeptsFiltered(ctx context.Context, pool *pgxpool.Pool, t *Tenant, filter DeptListFilter) ([]DeptRow, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -51,12 +70,12 @@ func (s *Service) ListDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) 
 		return nil, err
 	}
 	rows, err := tx.Query(ctx,
-		`SELECT id, name, parent_id, order_num,
-		        COALESCE(leader,''), COALESCE(phone,''), COALESCE(email,''),
-		        status, COALESCE(is_root, false), to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
+		`SELECT id, tenant_id, name, COALESCE(org_code,''), parent_id, COALESCE(org_type,'department'), order_num,
+		        COALESCE(leader,''), COALESCE(leader_account,''), COALESCE(phone,''), COALESCE(email,''),
+		        status, COALESCE(remark,''), COALESCE(is_root, false), to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM department
 		 WHERE tenant_id = $1 AND deleted_at IS NULL
-		 ORDER BY order_num, name`, t.ID)
+		 ORDER BY order_num, name, org_code`, t.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -64,8 +83,8 @@ func (s *Service) ListDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) 
 	out := []DeptRow{}
 	for rows.Next() {
 		var d DeptRow
-		if err := rows.Scan(&d.ID, &d.Name, &d.ParentID, &d.OrderNum,
-			&d.Leader, &d.Phone, &d.Email, &d.Status, &d.IsRoot, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &d.OrgCode, &d.ParentID, &d.OrgType, &d.OrderNum,
+			&d.Leader, &d.LeaderAccount, &d.Phone, &d.Email, &d.Status, &d.Remark, &d.IsRoot, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -73,16 +92,37 @@ func (s *Service) ListDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	out = attachDeptPaths(out)
+	out = filterDeptRows(out, filter)
 	return out, tx.Commit(ctx)
 }
 
 // DeptTree builds and returns the department tree.
 func (s *Service) DeptTree(ctx context.Context, pool *pgxpool.Pool, t *Tenant) ([]*DeptTreeNode, error) {
-	flat, err := s.ListDepts(ctx, pool, t)
+	return s.DeptTreeFiltered(ctx, pool, t, DeptListFilter{})
+}
+
+// DeptTreeFiltered builds and returns a filtered department tree.
+func (s *Service) DeptTreeFiltered(ctx context.Context, pool *pgxpool.Pool, t *Tenant, filter DeptListFilter) ([]*DeptTreeNode, error) {
+	flat, err := s.ListDeptsFiltered(ctx, pool, t, filter)
 	if err != nil {
 		return nil, err
 	}
 	return buildDeptTree(flat), nil
+}
+
+// GetDept returns one tenant-scoped organization by id.
+func (s *Service) GetDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant, id kernel.ID) (*DeptRow, error) {
+	flat, err := s.ListDepts(ctx, pool, t)
+	if err != nil {
+		return nil, err
+	}
+	for i := range flat {
+		if flat[i].ID == id {
+			return &flat[i], nil
+		}
+	}
+	return nil, errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
 }
 
 // buildDeptTree converts a flat list into a nested tree.
@@ -107,20 +147,108 @@ func buildDeptTree(flat []DeptRow) []*DeptTreeNode {
 	return roots
 }
 
+func attachDeptPaths(flat []DeptRow) []DeptRow {
+	byID := make(map[kernel.ID]*DeptRow, len(flat))
+	for i := range flat {
+		byID[flat[i].ID] = &flat[i]
+	}
+	var pathOf func(id kernel.ID, seen map[kernel.ID]bool) string
+	pathOf = func(id kernel.ID, seen map[kernel.ID]bool) string {
+		d := byID[id]
+		if d == nil {
+			return ""
+		}
+		if seen[id] {
+			return d.Name
+		}
+		seen[id] = true
+		if d.ParentID == nil {
+			return d.Name
+		}
+		pp := pathOf(*d.ParentID, seen)
+		if pp == "" {
+			return d.Name
+		}
+		return pp + "/" + d.Name
+	}
+	for i := range flat {
+		flat[i].Path = pathOf(flat[i].ID, map[kernel.ID]bool{})
+	}
+	return flat
+}
+
+func filterDeptRows(flat []DeptRow, filter DeptListFilter) []DeptRow {
+	search := strings.ToLower(strings.TrimSpace(filter.Search))
+	status := strings.TrimSpace(filter.Status)
+	if search == "" && status == "" {
+		return flat
+	}
+	byID := make(map[kernel.ID]DeptRow, len(flat))
+	for _, d := range flat {
+		byID[d.ID] = d
+	}
+	include := map[kernel.ID]bool{}
+	for _, d := range flat {
+		if status != "" && d.Status != status {
+			continue
+		}
+		if search != "" {
+			hay := strings.ToLower(d.Name + " " + d.OrgCode)
+			if !strings.Contains(hay, search) {
+				continue
+			}
+		}
+		cur := d
+		for {
+			include[cur.ID] = true
+			if cur.ParentID == nil {
+				break
+			}
+			parent, ok := byID[*cur.ParentID]
+			if !ok {
+				break
+			}
+			cur = parent
+		}
+	}
+	out := make([]DeptRow, 0, len(include))
+	for _, d := range flat {
+		if include[d.ID] {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // CreateDeptCmd is input for department creation.
 type CreateDeptCmd struct {
-	Name     string
-	ParentID *kernel.ID
-	OrderNum int
-	Leader   string
-	Phone    string
-	Email    string
+	Name          string
+	OrgCode       string
+	ParentID      *kernel.ID
+	OrgType       string
+	OrderNum      int
+	Leader        string
+	LeaderAccount string
+	Phone         string
+	Email         string
+	Status        string
+	Remark        string
 }
 
 // CreateDept inserts a new department.
 func (s *Service) CreateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant, cmd CreateDeptCmd) (*DeptRow, error) {
+	cmd.Name = strings.TrimSpace(cmd.Name)
+	cmd.OrgCode = strings.TrimSpace(cmd.OrgCode)
+	cmd.OrgType = normalizeOrgType(cmd.OrgType)
+	cmd.Status = normalizeDeptStatus(cmd.Status)
 	if cmd.Name == "" {
 		return nil, errors.New(errors.KindParam, "tenancy.dept_name_required", "部门名称不能为空")
+	}
+	if cmd.OrgCode == "" {
+		return nil, errors.New(errors.KindParam, "tenancy.dept_code_required", "组织编码不能为空")
+	}
+	if err := validateDeptStatus(cmd.Status); err != nil {
+		return nil, err
 	}
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -156,37 +284,52 @@ func (s *Service) CreateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 			return nil, errors.New(errors.KindParam, "tenancy.dept_parent_not_found", "父部门不存在")
 		}
 	}
+	if err := ensureOrgCodeUnique(ctx, tx, t, cmd.OrgCode, nil); err != nil {
+		return nil, err
+	}
 	id := kernel.NewID()
 	var createdAt string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO department (id, tenant_id, name, parent_id, order_num, leader, phone, email, status, is_root)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', false)
+		`INSERT INTO department (
+		    id, tenant_id, name, org_code, parent_id, org_type, order_num,
+		    leader, leader_account, phone, email, status, remark, is_root
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false)
 		 RETURNING to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')`,
-		id, t.ID, cmd.Name, idPtrOrNil(parentID), cmd.OrderNum,
-		nullStr(cmd.Leader), nullStr(cmd.Phone), nullStr(cmd.Email),
+		id, t.ID, cmd.Name, cmd.OrgCode, idPtrOrNil(parentID), cmd.OrgType, cmd.OrderNum,
+		nullStr(cmd.Leader), nullStr(cmd.LeaderAccount), nullStr(cmd.Phone), nullStr(cmd.Email),
+		cmd.Status, nullStr(cmd.Remark),
 	).Scan(&createdAt); err != nil {
 		return nil, errors.Wrap(errors.KindDatabase, "tenancy.create_dept_failed", "创建部门失败", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	_ = s.bus.Publish(ctx, "tenancy.dept_created", map[string]any{
+		"tenant_id": t.ID, "dept_id": id, "org_code": cmd.OrgCode,
+	})
 	return &DeptRow{
-		ID: id, Name: cmd.Name, ParentID: parentID, OrderNum: cmd.OrderNum,
-		Leader: cmd.Leader, Phone: cmd.Phone, Email: cmd.Email,
-		Status: "active", CreatedAt: createdAt,
+		ID: id, TenantID: t.ID, Name: cmd.Name, OrgCode: cmd.OrgCode, ParentID: parentID,
+		OrgType: cmd.OrgType, OrderNum: cmd.OrderNum,
+		Leader: cmd.Leader, LeaderAccount: cmd.LeaderAccount, Phone: cmd.Phone, Email: cmd.Email,
+		Status: cmd.Status, Remark: cmd.Remark, CreatedAt: createdAt,
 	}, nil
 }
 
 // UpdateDeptCmd holds optional fields for patching a department.
 type UpdateDeptCmd struct {
-	DeptID   kernel.ID
-	Name     *string
-	ParentID *kernel.ID // nil = don't change; use UpdateDeptClearParent to clear
-	OrderNum *int
-	Leader   *string
-	Phone    *string
-	Email    *string
-	Status   *string
+	DeptID        kernel.ID
+	Name          *string
+	OrgCode       *string
+	ParentID      *kernel.ID // nil = don't change; move is handled by MoveDept
+	OrgType       *string
+	OrderNum      *int
+	Leader        *string
+	LeaderAccount *string
+	Phone         *string
+	Email         *string
+	Status        *string
+	Remark        *string
 }
 
 // UpdateDept updates the given fields on a department.
@@ -215,8 +358,36 @@ func (s *Service) UpdateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 		}
 		return err
 	}
+	if cmd.Status != nil {
+		status := normalizeDeptStatus(*cmd.Status)
+		if err := validateDeptStatus(status); err != nil {
+			return err
+		}
+		*cmd.Status = status
+	}
 	if isRoot && cmd.Status != nil && *cmd.Status != "active" {
 		return errors.New(errors.KindParam, "tenancy.dept_root_status", "根组织不能禁用")
+	}
+	if cmd.OrgType != nil {
+		orgType := normalizeOrgType(*cmd.OrgType)
+		*cmd.OrgType = orgType
+	}
+	if cmd.Name != nil {
+		name := strings.TrimSpace(*cmd.Name)
+		if name == "" {
+			return errors.New(errors.KindParam, "tenancy.dept_name_required", "部门名称不能为空")
+		}
+		*cmd.Name = name
+	}
+	if cmd.OrgCode != nil {
+		code := strings.TrimSpace(*cmd.OrgCode)
+		if code == "" {
+			return errors.New(errors.KindParam, "tenancy.dept_code_required", "组织编码不能为空")
+		}
+		if err := ensureOrgCodeUnique(ctx, tx, t, code, &cmd.DeptID); err != nil {
+			return err
+		}
+		*cmd.OrgCode = code
 	}
 	sets := []string{}
 	args := []any{cmd.DeptID}
@@ -229,11 +400,20 @@ func (s *Service) UpdateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if cmd.Name != nil {
 		addField("name", *cmd.Name)
 	}
+	if cmd.OrgCode != nil {
+		addField("org_code", *cmd.OrgCode)
+	}
+	if cmd.OrgType != nil {
+		addField("org_type", *cmd.OrgType)
+	}
 	if cmd.OrderNum != nil {
 		addField("order_num", *cmd.OrderNum)
 	}
 	if cmd.Leader != nil {
 		addField("leader", nullStr(*cmd.Leader))
+	}
+	if cmd.LeaderAccount != nil {
+		addField("leader_account", nullStr(*cmd.LeaderAccount))
 	}
 	if cmd.Phone != nil {
 		addField("phone", nullStr(*cmd.Phone))
@@ -243,6 +423,9 @@ func (s *Service) UpdateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	}
 	if cmd.Status != nil {
 		addField("status", *cmd.Status)
+	}
+	if cmd.Remark != nil {
+		addField("remark", nullStr(*cmd.Remark))
 	}
 	if len(sets) == 0 {
 		return nil
@@ -263,7 +446,13 @@ func (s *Service) UpdateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if res.RowsAffected() == 0 {
 		return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	_ = s.bus.Publish(ctx, "tenancy.dept_updated", map[string]any{
+		"tenant_id": t.ID, "dept_id": cmd.DeptID,
+	})
+	return nil
 }
 
 // DeleteDept removes a department, rejecting if it has children or assigned members.
@@ -323,7 +512,95 @@ func (s *Service) DeleteDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if res.RowsAffected() == 0 {
 		return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	_ = s.bus.Publish(ctx, "tenancy.dept_deleted", map[string]any{
+		"tenant_id": t.ID, "dept_id": id,
+	})
+	return nil
+}
+
+// SetDeptStatus enables/disables an organization. cascade applies the same
+// status to every descendant, used by the UI after the admin confirms.
+func (s *Service) SetDeptStatus(ctx context.Context, pool *pgxpool.Pool, t *Tenant, id kernel.ID, status string, cascade bool) error {
+	status = normalizeDeptStatus(status)
+	if err := validateDeptStatus(status); err != nil {
+		return err
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
+		return err
+	}
+	var isRoot bool
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(is_root, false)
+		 FROM department
+		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		id, t.ID).Scan(&isRoot); err != nil {
+		if stderrors.Is(err, pgx.ErrNoRows) {
+			return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
+		}
+		return err
+	}
+	if isRoot && status != "active" {
+		return errors.New(errors.KindParam, "tenancy.dept_root_status", "根组织不能禁用")
+	}
+
+	targets := []kernel.ID{id}
+	if cascade {
+		rows, err := tx.Query(ctx,
+			`SELECT id, parent_id
+			 FROM department
+			 WHERE tenant_id = $1 AND deleted_at IS NULL`, t.ID)
+		if err != nil {
+			return err
+		}
+		childrenOf := map[kernel.ID][]kernel.ID{}
+		for rows.Next() {
+			var did kernel.ID
+			var pid *kernel.ID
+			if err := rows.Scan(&did, &pid); err != nil {
+				rows.Close()
+				return err
+			}
+			if pid != nil {
+				childrenOf[*pid] = append(childrenOf[*pid], did)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		targets = append(targets, collectChildIDs(childrenOf, id)...)
+	}
+	res, err := tx.Exec(ctx,
+		`UPDATE department
+		 SET status = $1
+		 WHERE id = ANY($2) AND tenant_id = $3 AND deleted_at IS NULL`,
+		status, targets, t.ID)
+	if err != nil {
+		return errors.Wrap(errors.KindDatabase, "tenancy.update_dept_status_failed", "更新组织状态失败", err)
+	}
+	if res.RowsAffected() == 0 {
+		return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	_ = s.bus.Publish(ctx, "tenancy.dept_status_changed", map[string]any{
+		"tenant_id": t.ID, "dept_id": id, "status": status, "cascade": cascade,
+	})
+	return nil
 }
 
 // MoveDept reparents a department, rejecting cycles.
@@ -403,7 +680,13 @@ func (s *Service) MoveDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant, i
 	if res.RowsAffected() == 0 {
 		return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	_ = s.bus.Publish(ctx, "tenancy.dept_moved", map[string]any{
+		"tenant_id": t.ID, "dept_id": id, "parent_id": idPtrOrNil(parentID),
+	})
+	return nil
 }
 
 // DescendantDeptIDs returns the IDs of all descendants of the given dept (not including itself),
@@ -436,6 +719,18 @@ func collectDescendants(flat []DeptRow, rootID kernel.ID) []kernel.ID {
 	return out
 }
 
+func collectChildIDs(childrenOf map[kernel.ID][]kernel.ID, rootID kernel.ID) []kernel.ID {
+	queue := append([]kernel.ID(nil), childrenOf[rootID]...)
+	out := []kernel.ID{}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		out = append(out, cur)
+		queue = append(queue, childrenOf[cur]...)
+	}
+	return out
+}
+
 // EnsureRootDept creates the one root organization node for the tenant if it
 // does not already exist. It is idempotent and safe to run after provisioning or
 // schema synchronization.
@@ -459,15 +754,16 @@ func (s *Service) EnsureRootDept(ctx context.Context, pool *pgxpool.Pool, t *Ten
 	}
 	var d DeptRow
 	if err := tx.QueryRow(ctx,
-		`SELECT id, name, parent_id, order_num,
-		        COALESCE(leader,''), COALESCE(phone,''), COALESCE(email,''),
-		        status, COALESCE(is_root, false), to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
+		`SELECT id, tenant_id, name, COALESCE(org_code,''), parent_id, COALESCE(org_type,'unit'), order_num,
+		        COALESCE(leader,''), COALESCE(leader_account,''), COALESCE(phone,''), COALESCE(email,''),
+		        status, COALESCE(remark,''), COALESCE(is_root, false), to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM department
 		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
-		rootID, t.ID).Scan(&d.ID, &d.Name, &d.ParentID, &d.OrderNum,
-		&d.Leader, &d.Phone, &d.Email, &d.Status, &d.IsRoot, &d.CreatedAt); err != nil {
+		rootID, t.ID).Scan(&d.ID, &d.TenantID, &d.Name, &d.OrgCode, &d.ParentID, &d.OrgType, &d.OrderNum,
+		&d.Leader, &d.LeaderAccount, &d.Phone, &d.Email, &d.Status, &d.Remark, &d.IsRoot, &d.CreatedAt); err != nil {
 		return nil, err
 	}
+	d.Path = d.Name
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -475,6 +771,47 @@ func (s *Service) EnsureRootDept(ctx context.Context, pool *pgxpool.Pool, t *Ten
 }
 
 // helpers ----------------------------------------------------------------
+
+func normalizeOrgType(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "department"
+	}
+	return v
+}
+
+func normalizeDeptStatus(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" || v == "normal" || v == "enabled" {
+		return "active"
+	}
+	return v
+}
+
+func validateDeptStatus(status string) error {
+	if status != "active" && status != "disabled" {
+		return errors.New(errors.KindParam, "tenancy.invalid_dept_status", "状态只能是 active 或 disabled")
+	}
+	return nil
+}
+
+func ensureOrgCodeUnique(ctx context.Context, tx pgx.Tx, t *Tenant, code string, excludeID *kernel.ID) error {
+	var count int
+	args := []any{t.ID, code}
+	sql := `SELECT count(*) FROM department
+	        WHERE tenant_id = $1 AND lower(org_code) = lower($2) AND deleted_at IS NULL`
+	if excludeID != nil {
+		sql += ` AND id <> $3`
+		args = append(args, *excludeID)
+	}
+	if err := tx.QueryRow(ctx, sql, args...).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return errors.New(errors.KindConflict, "tenancy.dept_code_exists", "同一租户内组织编码已存在")
+	}
+	return nil
+}
 
 func rootDeptID(ctx context.Context, tx pgx.Tx, t *Tenant) (kernel.ID, error) {
 	var id kernel.ID
@@ -499,8 +836,8 @@ func rootDeptID(ctx context.Context, tx pgx.Tx, t *Tenant) (kernel.ID, error) {
 	}
 	id = kernel.NewID()
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO department (id, tenant_id, name, parent_id, order_num, status, is_root)
-		 VALUES ($1, $2, $3, NULL, 0, 'active', true)`,
+		`INSERT INTO department (id, tenant_id, name, org_code, parent_id, org_type, order_num, status, is_root)
+		 VALUES ($1, $2, $3, 'ROOT', NULL, 'unit', 0, 'active', true)`,
 		id, t.ID, name); err != nil {
 		return "", errors.Wrap(errors.KindDatabase, "tenancy.create_root_dept_failed", "创建根组织失败", err)
 	}
@@ -521,31 +858,103 @@ func nullStr(s string) any {
 	return s
 }
 
+func deptFilterFromQuery(c *gin.Context) DeptListFilter {
+	return DeptListFilter{
+		Search: c.Query("search"),
+		Status: c.Query("status"),
+	}
+}
+
+func dryRunFromRequest(c *gin.Context) bool {
+	v := strings.ToLower(strings.TrimSpace(c.Query("dry_run")))
+	if v == "" {
+		v = strings.ToLower(strings.TrimSpace(c.Query("dryRun")))
+	}
+	if v == "" {
+		v = strings.ToLower(strings.TrimSpace(c.PostForm("dry_run")))
+	}
+	return v == "1" || v == "true" || v == "yes"
+}
+
+type deptCreateRequest struct {
+	Name          string  `json:"name" binding:"required"`
+	OrgCode       string  `json:"org_code" binding:"required"`
+	ParentID      *string `json:"parent_id"`
+	OrgType       string  `json:"org_type"`
+	OrderNum      int     `json:"order_num"`
+	Leader        string  `json:"leader"`
+	LeaderAccount string  `json:"leader_account"`
+	Phone         string  `json:"phone"`
+	Email         string  `json:"email"`
+	Status        string  `json:"status"`
+	Remark        string  `json:"remark"`
+}
+
+type deptPatchRequest struct {
+	Name          *string `json:"name"`
+	OrgCode       *string `json:"org_code"`
+	ParentID      *string `json:"parent_id"`
+	OrgType       *string `json:"org_type"`
+	OrderNum      *int    `json:"order_num"`
+	Leader        *string `json:"leader"`
+	LeaderAccount *string `json:"leader_account"`
+	Phone         *string `json:"phone"`
+	Email         *string `json:"email"`
+	Status        *string `json:"status"`
+	Remark        *string `json:"remark"`
+}
+
+func parseOptionalID(v *string) (*kernel.ID, bool, error) {
+	if v == nil {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(*v) == "" {
+		return nil, true, nil
+	}
+	id, err := kernel.ParseID(*v)
+	if err != nil {
+		return nil, true, err
+	}
+	return &id, true, nil
+}
+
+func createDeptCmdFromRequest(req deptCreateRequest) (CreateDeptCmd, error) {
+	pid, _, err := parseOptionalID(req.ParentID)
+	if err != nil {
+		return CreateDeptCmd{}, errors.Wrap(errors.KindParam, "tenancy.invalid_parent_id", "parent_id 无效", err)
+	}
+	return CreateDeptCmd{
+		Name: req.Name, OrgCode: req.OrgCode, ParentID: pid, OrgType: req.OrgType,
+		OrderNum: req.OrderNum, Leader: req.Leader, LeaderAccount: req.LeaderAccount,
+		Phone: req.Phone, Email: req.Email, Status: req.Status, Remark: req.Remark,
+	}, nil
+}
+
 // registerDeptRoutes mounts /admin/depts/* (tenant_admin gated by the caller).
 // authz adds the per-route dept:write gate on import/export endpoints.
 func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
-	// CSV export / template / import. Registered before the parameterized routes so
-	// the literal paths take precedence. All gated with dept:write.
+	// Export / template / import are registered before parameterized routes so the
+	// literal paths take precedence. All gated with dept:write.
 	r.GET("/admin/depts/export", authz("dept", "write"), func(c *gin.Context) {
-		rows, err := svc.ExportDepts(c.Request.Context(), pool, tenantFromCtx(c))
+		rows, err := svc.ExportDepts(c.Request.Context(), pool, tenantFromCtx(c), deptFilterFromQuery(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.CSV(c, "departments.csv", rows)
+		apiresp.XLSX(c, "departments.xlsx", rows)
 	})
 
 	r.GET("/admin/depts/template", authz("dept", "write"), func(c *gin.Context) {
-		apiresp.CSV(c, "departments_template.csv", DeptTemplateRows())
+		apiresp.XLSX(c, "departments_template.xlsx", DeptTemplateRows())
 	})
 
 	r.POST("/admin/depts/import", authz("dept", "write"), func(c *gin.Context) {
-		records, err := apiresp.ParseCSVUpload(c, "file")
+		records, err := apiresp.ParseTabularUpload(c, "file")
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		res, err := svc.ImportDepts(c.Request.Context(), pool, tenantFromCtx(c), records)
+		res, err := svc.ImportDepts(c.Request.Context(), pool, tenantFromCtx(c), records, dryRunFromRequest(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -554,7 +963,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 	})
 
 	r.GET("/admin/depts", authz("dept", "read"), func(c *gin.Context) {
-		depts, err := svc.ListDepts(c.Request.Context(), pool, tenantFromCtx(c))
+		depts, err := svc.ListDeptsFiltered(c.Request.Context(), pool, tenantFromCtx(c), deptFilterFromQuery(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -563,7 +972,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 	})
 
 	r.GET("/admin/depts/tree", authz("dept", "read"), func(c *gin.Context) {
-		tree, err := svc.DeptTree(c.Request.Context(), pool, tenantFromCtx(c))
+		tree, err := svc.DeptTreeFiltered(c.Request.Context(), pool, tenantFromCtx(c), deptFilterFromQuery(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -571,30 +980,30 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.OK(c, gin.H{"tree": tree})
 	})
 
-	r.POST("/admin/depts", authz("dept", "write"), func(c *gin.Context) {
-		var req struct {
-			Name     string  `json:"name" binding:"required"`
-			ParentID *string `json:"parent_id"`
-			OrderNum int     `json:"order_num"`
-			Leader   string  `json:"leader"`
-			Phone    string  `json:"phone"`
-			Email    string  `json:"email"`
+	r.GET("/admin/depts/:id", authz("dept", "read"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
+			return
 		}
+		dept, err := svc.GetDept(c.Request.Context(), pool, tenantFromCtx(c), id)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, dept)
+	})
+
+	r.POST("/admin/depts", authz("dept", "write"), func(c *gin.Context) {
+		var req deptCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
 			return
 		}
-		cmd := CreateDeptCmd{
-			Name: req.Name, OrderNum: req.OrderNum,
-			Leader: req.Leader, Phone: req.Phone, Email: req.Email,
-		}
-		if req.ParentID != nil && *req.ParentID != "" {
-			pid, err := kernel.ParseID(*req.ParentID)
-			if err != nil {
-				apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_parent_id", "parent_id 无效", err))
-				return
-			}
-			cmd.ParentID = &pid
+		cmd, err := createDeptCmdFromRequest(req)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
 		}
 		dept, err := svc.CreateDept(c.Request.Context(), pool, tenantFromCtx(c), cmd)
 		if err != nil {
@@ -610,22 +1019,46 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
 			return
 		}
-		var req struct {
-			Name     *string `json:"name"`
-			OrderNum *int    `json:"order_num"`
-			Leader   *string `json:"leader"`
-			Phone    *string `json:"phone"`
-			Email    *string `json:"email"`
-			Status   *string `json:"status"`
-		}
+		var req deptPatchRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
 			return
 		}
 		if err := svc.UpdateDept(c.Request.Context(), pool, tenantFromCtx(c), UpdateDeptCmd{
-			DeptID: id, Name: req.Name, OrderNum: req.OrderNum,
-			Leader: req.Leader, Phone: req.Phone, Email: req.Email, Status: req.Status,
+			DeptID: id, Name: req.Name, OrgCode: req.OrgCode, OrgType: req.OrgType,
+			OrderNum: req.OrderNum, Leader: req.Leader, LeaderAccount: req.LeaderAccount,
+			Phone: req.Phone, Email: req.Email, Status: req.Status, Remark: req.Remark,
 		}); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if parentID, present, err := parseOptionalID(req.ParentID); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_parent_id", "parent_id 无效", err))
+			return
+		} else if present {
+			if err := svc.MoveDept(c.Request.Context(), pool, tenantFromCtx(c), id, parentID); err != nil {
+				apiresp.Fail(c, err)
+				return
+			}
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/admin/depts/:id/status", authz("dept", "write"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
+			return
+		}
+		var req struct {
+			Status  string `json:"status" binding:"required"`
+			Cascade bool   `json:"cascade"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.SetDeptStatus(c.Request.Context(), pool, tenantFromCtx(c), id, req.Status, req.Cascade); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}

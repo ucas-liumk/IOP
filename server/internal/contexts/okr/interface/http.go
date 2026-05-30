@@ -520,12 +520,12 @@ func expandDepartments(ctx context.Context, tdb *tenantdb.TenantDB, tenantID ker
 			`WITH RECURSIVE dept_tree AS (
 			   SELECT id
 			   FROM department
-			   WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND deleted_at IS NULL
+			   WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND deleted_at IS NULL AND status = 'active'
 			   UNION ALL
 			   SELECT d.id
 			   FROM department d
 			   JOIN dept_tree p ON d.parent_id = p.id
-			   WHERE d.tenant_id = $2 AND d.deleted_at IS NULL
+			   WHERE d.tenant_id = $2 AND d.deleted_at IS NULL AND d.status = 'active'
 			 )
 			 SELECT DISTINCT id FROM dept_tree`,
 			idStrings(roots), tenantID)
