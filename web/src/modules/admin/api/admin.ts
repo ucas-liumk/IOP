@@ -1,5 +1,39 @@
 import { client } from "@/api/client";
 
+// === Shared paging / bulk shapes ===
+export interface Paged<T> {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+export interface BulkRowError { row: number; key?: string; message: string }
+export interface BulkResult { total: number; succeeded: number; failed: number; errors: BulkRowError[] }
+export interface PolicyChange { resource: string; action: string }
+
+// Triggers a browser download for a CSV blob fetched from `path` (responseType
+// blob). Falls back to a sensible default filename when none is provided.
+async function downloadCsv(path: string, filename: string): Promise<void> {
+  const res = await client.get(path, { responseType: "blob" });
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// POSTs a single file as multipart/form-data (field "file") and returns the
+// BulkResult envelope.
+async function uploadCsv(path: string, file: File): Promise<BulkResult> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await client.post(path, fd);
+  return (r.data?.data ?? r.data) as BulkResult;
+}
+
 export interface MeAdmin { is_tenant_admin: boolean; is_platform_admin: boolean }
 export async function getMyAdminFlags(): Promise<MeAdmin> {
   try {
@@ -30,6 +64,44 @@ export async function listMembers(params: ListMembersParams | string = {}): Prom
   if (p.subtree) query.subtree = "true";
   const r = await client.get("/admin/members", { params: query });
   return r.data?.data?.members ?? [];
+}
+
+export interface ListMembersPagedParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  deptId?: string | null;
+  subtree?: boolean;
+}
+// Server-side paginated member listing. Returns the typed page envelope; the
+// server caps page_size at 100.
+export async function listMembersPaged(p: ListMembersPagedParams = {}): Promise<Paged<Member>> {
+  const query: Record<string, string | number> = {
+    page: p.page ?? 1,
+    page_size: p.pageSize ?? 20,
+  };
+  if (p.search) query.search = p.search;
+  if (p.deptId) query.dept_id = p.deptId;
+  if (p.subtree) query.subtree = "true";
+  const r = await client.get("/admin/members", { params: query });
+  const d = r.data?.data ?? {};
+  return {
+    data: d.data ?? d.members ?? [],
+    total: d.total ?? 0,
+    page: d.page ?? query.page as number,
+    pageSize: d.page_size ?? query.page_size as number,
+  };
+}
+
+// Member CSV export / template download + import (member:write gated server-side).
+export function downloadMembersCsv(): Promise<void> {
+  return downloadCsv("/admin/members/export", "members.csv");
+}
+export function downloadMembersTemplate(): Promise<void> {
+  return downloadCsv("/admin/members/template", "members_template.csv");
+}
+export function importMembers(file: File): Promise<BulkResult> {
+  return uploadCsv("/admin/members/import", file);
 }
 // updateMember: dept_id is tri-state on the wire — omit to leave unchanged,
 // "" / null to clear, an id to assign. Pass `dept_id` key only when changing it.
@@ -90,6 +162,17 @@ export async function deleteDept(id: string) {
 }
 export async function moveDept(id: string, parentId: string | null) {
   await client.post(`/admin/depts/${id}/move`, { parent_id: parentId ?? "" });
+}
+
+// Department CSV export / template download + import (dept:write gated server-side).
+export function downloadDeptsCsv(): Promise<void> {
+  return downloadCsv("/admin/depts/export", "departments.csv");
+}
+export function downloadDeptsTemplate(): Promise<void> {
+  return downloadCsv("/admin/depts/template", "departments_template.csv");
+}
+export function importDepts(file: File): Promise<BulkResult> {
+  return uploadCsv("/admin/depts/import", file);
 }
 
 // === Posts (岗位) ===
@@ -167,6 +250,16 @@ export async function addPolicy(roleId: string, resource: string, action: string
 }
 export async function removePolicy(roleId: string, resource: string, action: string) {
   await client.delete(`/admin/roles/${roleId}/policies`, { params: { resource, action } });
+}
+// Atomically add/remove a set of policies on a tenant role in one request.
+export async function batchPolicy(
+  roleId: string,
+  changes: { add?: PolicyChange[]; remove?: PolicyChange[] },
+) {
+  await client.post(`/admin/roles/${roleId}/policies/batch`, {
+    add: changes.add ?? [],
+    remove: changes.remove ?? [],
+  });
 }
 export async function grantRoleToMember(memberId: string, code: string) {
   await client.post(`/admin/members/${memberId}/roles`, { code });
@@ -357,6 +450,27 @@ export interface PlatformUser {
 export async function listPlatformUsers(search = ""): Promise<PlatformUser[]> {
   const r = await client.get("/platform/users", { params: search ? { search } : {} });
   return r.data?.data?.users ?? [];
+}
+export interface ListPlatformUsersPagedParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+}
+// Server-side paginated platform-user listing (platform admin only).
+export async function listPlatformUsersPaged(p: ListPlatformUsersPagedParams = {}): Promise<Paged<PlatformUser>> {
+  const query: Record<string, string | number> = {
+    page: p.page ?? 1,
+    page_size: p.pageSize ?? 20,
+  };
+  if (p.search) query.search = p.search;
+  const r = await client.get("/platform/users", { params: query });
+  const d = r.data?.data ?? {};
+  return {
+    data: d.data ?? d.users ?? [],
+    total: d.total ?? 0,
+    page: d.page ?? query.page as number,
+    pageSize: d.page_size ?? query.page_size as number,
+  };
 }
 export async function createPlatformUser(payload: {
   username: string; real_name: string; phone?: string; password: string;

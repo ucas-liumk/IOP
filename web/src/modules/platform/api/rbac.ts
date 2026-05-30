@@ -36,6 +36,17 @@ export async function addPlatformPolicy(id: string, resource: string, action: st
 export async function removePlatformPolicy(id: string, resource: string, action: string) {
   await client.delete(`/platform/rbac/roles/${id}/policies`, { params: { resource, action } });
 }
+export interface PolicyChange { resource: string; action: string }
+// Atomically add/remove a set of policies on a platform role in one request.
+export async function platformBatchPolicy(
+  id: string,
+  changes: { add?: PolicyChange[]; remove?: PolicyChange[] },
+) {
+  await client.post(`/platform/rbac/roles/${id}/policies/batch`, {
+    add: changes.add ?? [],
+    remove: changes.remove ?? [],
+  });
+}
 export async function grantPlatformRole(id: string, platform_user_id: string) {
   await client.post(`/platform/rbac/roles/${id}/members`, { platform_user_id });
 }

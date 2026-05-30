@@ -2,6 +2,9 @@
 export { default as PageHeader } from "./PageHeader.vue";
 export { default as StatCard } from "./StatCard.vue";
 export { default as DataTable } from "./DataTable.vue";
+export { default as Pagination } from "./Pagination.vue";
+export { default as ImportDialog } from "./ImportDialog.vue";
+export type { BulkResult, BulkRowError } from "./ImportDialog.vue";
 export type { Column } from "./types";
 export { default as EmptyState } from "./EmptyState.vue";
 export { default as Toast } from "./Toast.vue";
