@@ -151,7 +151,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	tenantDB := tenantdb.NewTenantDB(pool)
 
 	// Audit: tenant lookup via tenancy service
-	auditSvc := audit.NewService(tenantDB,
+	auditSvc := audit.NewService(pool, tenantDB,
 		func(c context.Context, id kernel.ID) (string, bool) {
 			t, _ := tenantSvc.GetTenant(c, id)
 			if t == nil {

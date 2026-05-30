@@ -178,6 +178,22 @@ var defaultRolePolicies = map[string][][2]string{
 	},
 }
 
+// highRiskSet is derived from platformCatalog at package init for O(1) lookup.
+var highRiskSet = func() map[[2]string]bool {
+	m := map[[2]string]bool{}
+	for _, p := range platformCatalog {
+		if p.IsHighRisk {
+			m[[2]string{p.Resource, p.Action}] = true
+		}
+	}
+	return m
+}()
+
+// IsHighRiskPermission reports whether (resource, action) is flagged high-risk.
+func (s *Service) IsHighRiskPermission(resource, action string) bool {
+	return highRiskSet[[2]string{resource, action}]
+}
+
 // SeedPlatformRBAC upserts the permission catalog and ensures the built-in 三员 roles
 // carry their default policies. Idempotent; safe to run on every boot.
 func (s *Service) SeedPlatformRBAC(ctx context.Context) error {
