@@ -165,6 +165,7 @@ export interface DeptTreeNode extends Dept {
 export interface DeptQuery {
   search?: string;
   status?: string;
+  [key: string]: string | undefined;
 }
 export async function listDepts(params: DeptQuery = {}): Promise<Dept[]> {
   const r = await client.get("/admin/depts", { params });
@@ -194,7 +195,7 @@ export async function moveDept(id: string, parentId: string | null) {
   await client.post(`/admin/depts/${id}/move`, { parent_id: parentId ?? "" });
 }
 
-// Department CSV export / template download + import (dept:write gated server-side).
+// Department spreadsheet export / template download + import (dept:write gated server-side).
 export function downloadDeptsCsv(params: DeptQuery = {}): Promise<void> {
   return downloadFile("/admin/depts/export", "departments.xlsx", params);
 }

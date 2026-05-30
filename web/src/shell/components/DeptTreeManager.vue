@@ -6,7 +6,7 @@
         <button class="btn btn-ghost btn-sm" @click="reload">刷新</button>
         <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="exportCsv">导出</button>
         <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="importOpen = true">导入</button>
-        <button class="btn btn-primary btn-sm" v-perm="writePerm" @click="openCreate(null)">+ 新建部门</button>
+        <button class="btn btn-primary btn-sm" v-perm="writePerm" @click="openCreate(null)">+ 新建组织</button>
       </div>
     </div>
 
@@ -15,12 +15,17 @@
       <article class="card tree-pane">
         <div class="pane-head">组织架构 · {{ flatCount }} 个节点</div>
         <div class="tree-search">
-          <input class="input search" v-model="treeFilter" placeholder="搜索部门" />
+          <input class="input search" v-model="treeFilter" placeholder="搜索组织名称 / 编码" />
+          <select class="input status-filter" v-model="statusFilter">
+            <option value="">全部状态</option>
+            <option value="active">正常</option>
+            <option value="disabled">停用</option>
+          </select>
         </div>
         <TreeView
           :nodes="tree"
           :selected-id="selectedId"
-          :filter="treeFilter"
+          :filter="''"
           id-key="id"
           label-key="name"
           @select="select"
@@ -28,6 +33,7 @@
           <template #label="{ node }">
             <span class="dept-node">
               {{ node.name }}
+              <code v-if="node.org_code" class="node-code">{{ node.org_code }}</code>
               <span v-if="node.is_root" class="tag-root">根组织</span>
               <span v-if="node.status !== 'active'" class="tag-off">停用</span>
             </span>
@@ -38,16 +44,19 @@
 
       <!-- Right: detail / form -->
       <article class="card detail-pane">
-        <EmptyState v-if="!selected && mode === 'view'" title="选择一个部门" sub="从左侧选择部门查看或编辑，或新建子部门。" icon="◫" />
+        <EmptyState v-if="!selected && mode === 'view'" title="选择一个组织" sub="从左侧选择组织查看或编辑，或新建下级组织。" icon="◫" />
 
         <template v-else>
           <div class="detail-head">
             <h2 class="detail-title">
-              {{ mode === 'create' ? (form.parent_id ? '新建子部门' : '新建部门') : form.name }}
+              {{ mode === 'create' ? (form.parent_id ? '新建下级组织' : '新建组织') : form.name }}
             </h2>
             <div v-if="mode === 'view' && selected" class="detail-tools">
-              <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="openCreate(selected.id)">+ 子部门</button>
+              <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="openCreate(selected.id)">+ 下级</button>
               <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="startEdit">编辑</button>
+              <button v-if="!selected.is_root" class="btn btn-ghost btn-sm" v-perm="writePerm" @click="toggleStatus(selected)">
+                {{ selected.status === 'active' ? '禁用' : '启用' }}
+              </button>
               <button v-if="!selected.is_root" class="btn btn-ghost btn-sm danger" v-perm="writePerm" @click="removeDept">删除</button>
             </div>
           </div>
@@ -59,10 +68,13 @@
             </span>
           </div>
           <dl v-if="mode === 'view' && selected" class="info-grid">
-            <div><dt>部门名称</dt><dd>{{ selected.name }}</dd></div>
-            <div><dt>上级部门</dt><dd>{{ parentName(selected) }}</dd></div>
+            <div><dt>组织名称</dt><dd>{{ selected.name }}</dd></div>
+            <div><dt>组织编码</dt><dd><code>{{ selected.org_code }}</code></dd></div>
+            <div><dt>上级组织</dt><dd>{{ parentName(selected) }}</dd></div>
+            <div><dt>组织类型</dt><dd>{{ orgTypeLabel(selected.org_type) }}</dd></div>
             <div><dt>排序</dt><dd>{{ selected.order_num }}</dd></div>
             <div><dt>负责人</dt><dd>{{ selected.leader || '—' }}</dd></div>
+            <div><dt>负责人账号</dt><dd>{{ selected.leader_account || '—' }}</dd></div>
             <div><dt>电话</dt><dd>{{ selected.phone || '—' }}</dd></div>
             <div><dt>邮箱</dt><dd>{{ selected.email || '—' }}</dd></div>
             <div><dt>状态</dt><dd>
@@ -71,16 +83,52 @@
               </span>
             </dd></div>
             <div><dt>创建时间</dt><dd class="mono">{{ selected.created_at }}</dd></div>
+            <div class="wide"><dt>组织路径</dt><dd>{{ selected.path || breadcrumb(selected).join('/') }}</dd></div>
+            <div class="wide"><dt>备注</dt><dd>{{ selected.remark || '—' }}</dd></div>
           </dl>
+          <section v-if="mode === 'view' && selected" class="children-panel">
+            <div class="children-head">
+              <span>下级组织</span>
+              <span class="muted">{{ selectedChildren.length }} 个</span>
+            </div>
+            <div v-if="selectedChildren.length === 0" class="children-empty">暂无下级组织。</div>
+            <table v-else class="children-table">
+              <thead><tr><th>名称</th><th>编码</th><th>类型</th><th>状态</th><th>排序</th></tr></thead>
+              <tbody>
+                <tr v-for="child in selectedChildren" :key="child.id" @click="select(child.id)">
+                  <td>{{ child.name }}</td>
+                  <td><code>{{ child.org_code }}</code></td>
+                  <td>{{ orgTypeLabel(child.org_type) }}</td>
+                  <td>{{ child.status === 'active' ? '正常' : '停用' }}</td>
+                  <td>{{ child.order_num }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
 
           <!-- Create / edit form -->
           <form v-else class="form" @submit.prevent="save">
             <label class="field">
-              <span class="label">部门名称 *</span>
+              <span class="label">组织名称 *</span>
               <input class="input" v-model="form.name" required placeholder="例如：研发部" />
             </label>
+            <div class="form-row-2">
+              <label class="field">
+                <span class="label">组织编码 *</span>
+                <input class="input" v-model="form.org_code" required placeholder="例如：RD" />
+              </label>
+              <label class="field">
+                <span class="label">组织类型</span>
+                <select class="input" v-model="form.org_type">
+                  <option value="unit">单位</option>
+                  <option value="department">部门</option>
+                  <option value="office">科室</option>
+                  <option value="team">小组</option>
+                </select>
+              </label>
+            </div>
             <label class="field">
-              <span class="label">上级部门</span>
+              <span class="label">上级组织</span>
               <select class="input" v-model="form.parent_id" :disabled="mode === 'edit' && selected?.is_root">
                 <option :value="null">（挂到根组织）</option>
                 <option v-for="d in selectableParents" :key="d.id" :value="d.id">{{ indentName(d) }}</option>
@@ -105,12 +153,22 @@
             </label>
             <div class="form-row-2">
               <label class="field">
+                <span class="label">负责人账号</span>
+                <input class="input" v-model="form.leader_account" placeholder="可选" />
+              </label>
+              <label class="field">
                 <span class="label">电话</span>
                 <input class="input" v-model="form.phone" placeholder="可选" />
               </label>
+            </div>
+            <div class="form-row-2">
               <label class="field">
                 <span class="label">邮箱</span>
                 <input class="input" v-model="form.email" placeholder="可选" />
+              </label>
+              <label class="field">
+                <span class="label">备注</span>
+                <input class="input" v-model="form.remark" placeholder="可选" />
               </label>
             </div>
             <div v-if="formError" class="form-error">{{ formError }}</div>
@@ -125,10 +183,10 @@
 
     <ImportDialog
       v-model:open="importOpen"
-      title="导入部门"
+      title="导入组织"
       :template-url="templateUrl"
       :import-url="importUrl"
-      template-name="departments_template.csv"
+      template-name="departments_template.xlsx"
       @done="onImportDone"
     />
   </div>
@@ -149,44 +207,56 @@ import { useConfirm } from "@/shell/confirm";
 // couple to any one module's api typing (tenant + platform reuse this).
 export interface DeptRow {
   id: string;
+  tenant_id: string;
   name: string;
+  org_code: string;
   parent_id?: string | null;
+  org_type: string;
   order_num: number;
   leader?: string;
+  leader_account?: string;
   phone?: string;
   email?: string;
   status: string;
+  remark?: string;
+  path?: string;
   is_root?: boolean;
   created_at: string;
 }
 export interface DeptTreeRow extends DeptRow {
   children?: DeptTreeRow[];
 }
-export interface CreateDeptPayload {
-  name: string; parent_id?: string | null; order_num?: number;
-  leader?: string; phone?: string; email?: string;
+export interface DeptQuery {
+  search?: string;
+  status?: string;
+  [key: string]: string | undefined;
 }
-export type UpdateDeptPatch = Partial<Pick<DeptRow, "name" | "order_num" | "leader" | "phone" | "email" | "status">>;
+export interface CreateDeptPayload {
+  name: string; org_code: string; parent_id?: string | null; org_type?: string; order_num?: number;
+  leader?: string; leader_account?: string; phone?: string; email?: string; status?: string; remark?: string;
+}
+export type UpdateDeptPatch = Partial<Pick<DeptRow, "name" | "org_code" | "parent_id" | "org_type" | "order_num" | "leader" | "leader_account" | "phone" | "email" | "status" | "remark">>;
 
 // The api-adapter object decouples this component from how the endpoints are
 // wired (tenant `/admin/depts*` vs platform `/platform/orgs/:tid/depts*`). The
-// owning view supplies the concrete funcs; CSV import/export use plain URLs
+// owning view supplies the concrete funcs; spreadsheet import/export use plain URLs
 // (export via the adapter, import + template via ImportDialog's URL props).
 export interface DeptApi {
-  fetchTree(): Promise<DeptTreeRow[]>;
-  fetchFlat(): Promise<DeptRow[]>;
+  fetchTree(query?: DeptQuery): Promise<DeptTreeRow[]>;
+  fetchFlat(query?: DeptQuery): Promise<DeptRow[]>;
   create(payload: CreateDeptPayload): Promise<DeptRow>;
   update(id: string, patch: UpdateDeptPatch): Promise<void>;
+  setStatus(id: string, status: string, cascade?: boolean): Promise<void>;
   remove(id: string): Promise<void>;
   move(id: string, parentId: string | null): Promise<void>;
-  exportCsv(): Promise<void>;
+  exportCsv(query?: DeptQuery): Promise<void>;
 }
 
 const props = withDefaults(
   defineProps<{
     /** concrete dept endpoints (tenant or a specific org). */
     api: DeptApi;
-    /** API path the ImportDialog fetches the template CSV from. */
+    /** API path the ImportDialog fetches the template from. */
     templateUrl: string;
     /** API path the ImportDialog POSTs the multipart upload to (field "file"). */
     importUrl: string;
@@ -206,14 +276,17 @@ const mode = ref<"view" | "create" | "edit">("view");
 const busy = ref(false);
 const formError = ref("");
 const treeFilter = ref("");
+const statusFilter = ref("");
 const importOpen = ref(false);
+let reloadTimer: number | undefined;
 
 const flatCount = computed(() => flat.value.length);
 const selected = computed(() => flat.value.find((d) => d.id === selectedId.value) ?? null);
+const selectedChildren = computed(() => selected.value ? flat.value.filter((d) => d.parent_id === selected.value!.id) : []);
 
 const form = reactive({
-  name: "", parent_id: null as string | null, order_num: 0,
-  leader: "", phone: "", email: "", status: "active",
+  name: "", org_code: "", parent_id: null as string | null, org_type: "department", order_num: 0,
+  leader: "", leader_account: "", phone: "", email: "", status: "active", remark: "",
 });
 
 // Parents selectable in the form: in edit mode, exclude self + descendants (no cycles).
@@ -250,14 +323,27 @@ watch(() => props.api, () => {
   mode.value = "view";
   formError.value = "";
   treeFilter.value = "";
+  statusFilter.value = "";
   reload();
+});
+watch([treeFilter, statusFilter], () => {
+  if (reloadTimer) window.clearTimeout(reloadTimer);
+  reloadTimer = window.setTimeout(() => reload(), 250);
 });
 
 async function reload() {
-  [tree.value, flat.value] = await Promise.all([props.api.fetchTree(), props.api.fetchFlat()]);
+  const query = currentQuery();
+  [tree.value, flat.value] = await Promise.all([props.api.fetchTree(query), props.api.fetchFlat()]);
   if (selectedId.value && !flat.value.some((d) => d.id === selectedId.value)) {
     selectedId.value = null;
   }
+}
+
+function currentQuery(): DeptQuery {
+  return {
+    search: treeFilter.value.trim() || undefined,
+    status: statusFilter.value || undefined,
+  };
 }
 
 function select(id: string) {
@@ -270,6 +356,10 @@ function parentName(d: DeptRow): string {
   if (d.is_root) return "—";
   if (!d.parent_id) return "根组织";
   return flat.value.find((x) => x.id === d.parent_id)?.name ?? "—";
+}
+
+function orgTypeLabel(t: string): string {
+  return ({ unit: "单位", department: "部门", office: "科室", team: "小组" } as Record<string, string>)[t] ?? (t || "部门");
 }
 
 // Full ancestor → self name chain, used for the detail-panel breadcrumb.
@@ -305,7 +395,10 @@ function indentName(d: DeptRow): string {
 function openCreate(parentId: string | null) {
   mode.value = "create";
   formError.value = "";
-  Object.assign(form, { name: "", parent_id: parentId, order_num: 0, leader: "", phone: "", email: "", status: "active" });
+  Object.assign(form, {
+    name: "", org_code: "", parent_id: parentId, org_type: "department", order_num: 0,
+    leader: "", leader_account: "", phone: "", email: "", status: "active", remark: "",
+  });
 }
 
 function startEdit() {
@@ -314,12 +407,16 @@ function startEdit() {
   formError.value = "";
   Object.assign(form, {
     name: selected.value.name,
+    org_code: selected.value.org_code,
     parent_id: selected.value.parent_id ?? null,
+    org_type: selected.value.org_type || "department",
     order_num: selected.value.order_num,
     leader: selected.value.leader ?? "",
+    leader_account: selected.value.leader_account ?? "",
     phone: selected.value.phone ?? "",
     email: selected.value.email ?? "",
     status: selected.value.status,
+    remark: selected.value.remark ?? "",
   });
 }
 
@@ -329,34 +426,45 @@ function cancelForm() {
 }
 
 async function save() {
-  if (!form.name.trim()) { formError.value = "部门名称不能为空"; return; }
+  if (!form.name.trim()) { formError.value = "组织名称不能为空"; return; }
+  if (!form.org_code.trim()) { formError.value = "组织编码不能为空"; return; }
   busy.value = true; formError.value = "";
   try {
     if (mode.value === "create") {
       const d = await props.api.create({
-        name: form.name.trim(), parent_id: form.parent_id, order_num: form.order_num,
-        leader: form.leader, phone: form.phone, email: form.email,
+        name: form.name.trim(), org_code: form.org_code.trim(), parent_id: form.parent_id,
+        org_type: form.org_type, order_num: form.order_num,
+        leader: form.leader, leader_account: form.leader_account,
+        phone: form.phone, email: form.email, status: form.status, remark: form.remark,
       });
       await reload();
       selectedId.value = d.id;
       mode.value = "view";
-      notify.success("部门已创建");
+      notify.success("组织已创建");
     } else if (mode.value === "edit" && selected.value) {
       const id = selected.value.id;
       const origParent = selected.value.parent_id ?? null;
+      const origStatus = selected.value.status;
+      let cascade = false;
+      if (form.status !== origStatus && form.status === "disabled" && descendantIds(id).length > 0) {
+        cascade = await confirm({ title: "同步禁用", message: "该组织存在下级组织，是否同步禁用全部下级组织？取消则仅禁用当前组织。", danger: true });
+      }
       const patch: UpdateDeptPatch = {
-        name: form.name.trim(), order_num: form.order_num,
-        leader: form.leader, phone: form.phone, email: form.email,
+        name: form.name.trim(), org_code: form.org_code.trim(), org_type: form.org_type,
+        order_num: form.order_num, leader: form.leader, leader_account: form.leader_account,
+        phone: form.phone, email: form.email, remark: form.remark,
       };
-      if (!selected.value.is_root) patch.status = form.status;
       await props.api.update(id, patch);
       // Reparent separately via the dedicated move endpoint (cycle-checked server-side).
       if (!selected.value.is_root && (form.parent_id ?? null) !== origParent) {
         await props.api.move(id, form.parent_id);
       }
+      if (!selected.value.is_root && form.status !== origStatus) {
+        await props.api.setStatus(id, form.status, cascade);
+      }
       await reload();
       mode.value = "view";
-      notify.success("部门已更新");
+      notify.success("组织已更新");
     }
   } catch (e: any) {
     formError.value = e.response?.data?.error?.message ?? "保存失败";
@@ -369,14 +477,14 @@ async function removeDept() {
     notify.error("根组织不能删除");
     return;
   }
-  const ok = await confirm({ title: "删除部门", message: `确认删除「${selected.value.name}」？子部门或在职成员存在时无法删除。`, danger: true });
+  const ok = await confirm({ title: "删除组织", message: `确认删除「${selected.value.name}」？存在下级组织或成员时无法删除。`, danger: true });
   if (!ok) return;
   try {
     await props.api.remove(selected.value.id);
     selectedId.value = null;
     mode.value = "view";
     await reload();
-    notify.success("部门已删除");
+    notify.success("组织已删除");
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "删除失败");
   }
@@ -384,9 +492,25 @@ async function removeDept() {
 
 async function exportCsv() {
   try {
-    await props.api.exportCsv();
+    await props.api.exportCsv(currentQuery());
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "导出失败");
+  }
+}
+
+async function toggleStatus(d: DeptRow) {
+  if (d.is_root) return;
+  const next = d.status === "active" ? "disabled" : "active";
+  let cascade = false;
+  if (next === "disabled" && descendantIds(d.id).length > 0) {
+    cascade = await confirm({ title: "同步禁用", message: "该组织存在下级组织，是否同步禁用全部下级组织？取消则仅禁用当前组织。", danger: true });
+  }
+  try {
+    await props.api.setStatus(d.id, next, cascade);
+    await reload();
+    notify.success(next === "active" ? "组织已启用" : "组织已禁用");
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "状态更新失败");
   }
 }
 
@@ -403,13 +527,15 @@ defineExpose({ reload });
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 .tree-pane { padding: 12px; }
 .pane-head { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; padding: 4px 8px 10px; }
-.tree-search { padding: 0 4px 8px; }
+.tree-search { padding: 0 4px 8px; display: grid; grid-template-columns: 1fr 104px; gap: 8px; }
 .tree-search .search { width: 100%; font-size: 13px; padding: 6px 10px; box-sizing: border-box; }
+.status-filter { font-size: 12px; padding: 6px 8px; }
 .tree-empty-hint { color: var(--text-4); font-size: 12.5px; padding: 12px 8px; }
 .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--text-3); margin-bottom: 14px; }
 .crumb { display: inline-flex; align-items: center; }
 .crumb-sep { margin: 0 6px; color: var(--text-4); }
 .dept-node { display: inline-flex; align-items: center; gap: 6px; }
+.node-code { font-size: 10.5px; color: var(--text-3); font-weight: 600; }
 .tag-root { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--primary-soft); color: var(--primary); border-radius: 3px; }
 .tag-off { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--bg-deep); color: var(--text-3); border-radius: 3px; }
 
@@ -419,9 +545,20 @@ defineExpose({ reload });
 .detail-tools { display: flex; gap: 6px; }
 
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; }
+.info-grid .wide { grid-column: 1 / -1; }
 .info-grid dt { font-size: 11.5px; color: var(--text-3); margin-bottom: 3px; }
 .info-grid dd { font-size: 13.5px; color: var(--text); }
 .mono { font-family: var(--ff-mono); font-size: 12.5px; color: var(--text-2); }
+
+.children-panel { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }
+.children-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }
+.muted { color: var(--text-3); font-weight: 500; }
+.children-empty { font-size: 12.5px; color: var(--text-4); padding: 8px 0; }
+.children-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.children-table th { text-align: left; color: var(--text-3); font-weight: 600; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+.children-table td { padding: 8px; border-bottom: 1px solid var(--border-soft); color: var(--text-2); }
+.children-table tbody tr { cursor: pointer; }
+.children-table tbody tr:hover { background: var(--surface-2); }
 
 .form { display: flex; flex-direction: column; gap: 14px; max-width: 520px; }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }

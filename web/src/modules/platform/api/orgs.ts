@@ -38,7 +38,7 @@ export async function moveOrgDept(tid: string, id: string, parentId: string | nu
   await client.post(`${base(tid)}/${id}/move`, { parent_id: parentId ?? "" });
 }
 
-// CSV export → blob download.
+// Spreadsheet export → blob download.
 export async function downloadOrgDeptsCsv(tid: string, params: DeptQuery = {}): Promise<void> {
   const res = await client.get(`${base(tid)}/export`, { responseType: "blob", params });
   const url = URL.createObjectURL(res.data as Blob);

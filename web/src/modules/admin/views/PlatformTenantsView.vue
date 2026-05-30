@@ -3,6 +3,10 @@
     <PageHeader title="组织管理" :sub="`左选组织，右管其层级架构（部门 / 处室） · 平台共 ${tenants.length} 家组织`">
       <template #actions>
         <div class="head-actions">
+          <select class="tenant-select" v-model="selectedOrgId">
+            <option :value="null">选择租户</option>
+            <option v-for="t in tenants" :key="t.id" :value="t.id">{{ t.name }}</option>
+          </select>
           <button class="btn btn-ghost" @click="reload">刷新</button>
           <button class="btn btn-primary" v-perm="'org:write'" @click="openCreate">+ 新建组织</button>
         </div>
@@ -212,7 +216,13 @@ function colorFor(name: string) {
 
 <style scoped>
 .admin-page { display: flex; flex-direction: column; gap: var(--sp-5); }
-.head-actions { display: flex; gap: 8px; }
+.head-actions { display: flex; gap: 8px; align-items: center; }
+.tenant-select {
+  min-width: 220px; max-width: 280px;
+  padding: 7px 10px; border: 1px solid var(--border-strong);
+  border-radius: 7px; background: var(--surface); color: var(--text);
+  font-size: 13px;
+}
 .page-error {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--danger-soft); color: var(--danger);

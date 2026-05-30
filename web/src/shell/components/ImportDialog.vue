@@ -44,13 +44,15 @@
                     </tbody>
                   </table>
                 </div>
-                <p v-else class="imp-all-ok">全部导入成功。</p>
+                <p v-else class="imp-all-ok">
+                  {{ resultMode === 'dry-run' ? '预校验通过，未写入数据。' : '全部导入成功。' }}
+                </p>
               </div>
 
               <!-- Picker view -->
               <div v-else>
                 <p class="imp-hint">
-                  上传 CSV 文件以批量导入。请先
+                  上传 Excel 或 CSV 文件以批量导入。请先
                   <a class="imp-link" href="#" @click.prevent="downloadTemplate">下载模板</a>
                   ，按格式填写后再上传。
                 </p>
@@ -65,7 +67,7 @@
                   <input
                     ref="picker"
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
                     class="imp-file-hidden"
                     @change="onPick"
                   />
@@ -74,7 +76,7 @@
                     <polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
                   </svg>
                   <div v-if="file" class="imp-file-name">{{ file.name }}</div>
-                  <div v-else class="imp-drop-text">点击选择或拖拽 CSV 文件到此处</div>
+                  <div v-else class="imp-drop-text">点击选择或拖拽 Excel / CSV 文件到此处</div>
                 </div>
                 <p v-if="errorMsg" class="imp-error-msg">{{ errorMsg }}</p>
               </div>
@@ -87,10 +89,19 @@
               </button>
               <button
                 v-if="!result"
+                class="btn btn-ghost"
+                type="button"
+                :disabled="!file || busy"
+                @click="doImport(true)"
+              >
+                {{ busy ? "处理中…" : "预校验" }}
+              </button>
+              <button
+                v-if="!result"
                 class="btn btn-primary"
                 type="button"
                 :disabled="!file || busy"
-                @click="doImport"
+                @click="doImport(false)"
               >
                 {{ busy ? "导入中…" : "导入" }}
               </button>
@@ -115,14 +126,14 @@ const props = withDefaults(
     /** v-model:open — controls visibility. */
     open: boolean;
     title?: string;
-    /** API path (relative to axios baseURL) the template CSV is fetched from. */
+    /** API path (relative to axios baseURL) the template is fetched from. */
     templateUrl: string;
     /** API path the multipart import is POSTed to (field name "file"). */
     importUrl: string;
     /** suggested download filename for the template. */
     templateName?: string;
   }>(),
-  { title: "批量导入", templateName: "template.csv" },
+  { title: "批量导入", templateName: "template.xlsx" },
 );
 
 const emit = defineEmits<{
@@ -136,6 +147,7 @@ const file = ref<File | null>(null);
 const dragOver = ref(false);
 const busy = ref(false);
 const result = ref<BulkResult | null>(null);
+const resultMode = ref<"import" | "dry-run">("import");
 const errorMsg = ref("");
 
 // Reset transient state whenever the dialog (re)opens.
@@ -149,6 +161,7 @@ watch(
 function reset() {
   file.value = null;
   result.value = null;
+  resultMode.value = "import";
   errorMsg.value = "";
   busy.value = false;
   dragOver.value = false;
@@ -161,8 +174,8 @@ function close() {
 
 function setFile(f: File | null) {
   errorMsg.value = "";
-  if (f && !/\.csv$/i.test(f.name)) {
-    errorMsg.value = "请选择 .csv 文件";
+  if (f && !/\.(xlsx|csv)$/i.test(f.name)) {
+    errorMsg.value = "请选择 .xlsx 或 .csv 文件";
     return;
   }
   file.value = f;
@@ -184,20 +197,22 @@ async function downloadTemplate() {
   }
 }
 
-async function doImport() {
+async function doImport(dryRun = false) {
   if (!file.value) return;
   busy.value = true;
   errorMsg.value = "";
   try {
     const fd = new FormData();
     fd.append("file", file.value);
-    const res = await client.post(props.importUrl, fd);
+    fd.append("dry_run", dryRun ? "true" : "false");
+    const res = await client.post(props.importUrl, fd, { params: { dry_run: dryRun ? "true" : undefined } });
     const data: BulkResult = res.data?.data ?? res.data;
+    resultMode.value = dryRun ? "dry-run" : "import";
     result.value = data;
     if (data.failed > 0) {
-      notify.warning(`导入完成：成功 ${data.succeeded}，失败 ${data.failed}`);
+      notify.warning(`${dryRun ? "预校验" : "导入"}完成：通过 ${data.succeeded}，失败 ${data.failed}`);
     } else {
-      notify.success(`导入成功：${data.succeeded} 条`);
+      notify.success(dryRun ? `预校验通过：${data.succeeded} 条` : `导入成功：${data.succeeded} 条`);
     }
     emit("done", data);
   } catch (e: any) {
