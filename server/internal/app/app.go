@@ -334,8 +334,8 @@ func (a *App) Engine() *gin.Engine {
 	// context + tenant_admin role. This is the per-organization admin surface.
 	admin := authT.Group("")
 	admin.Use(iam.TenantAdminRequired(a.IAM))
-	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool)
-	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool)
+	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool, authz)
+	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool, authz)
 	audit.RegisterAdminRoutes(admin, a.Audit)
 	dictionary.RegisterAdminRoutes(admin, dictionary.AdminConfig{
 		Memory:   a.DictMemory,

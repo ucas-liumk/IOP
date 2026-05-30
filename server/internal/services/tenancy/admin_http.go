@@ -20,13 +20,23 @@ func tenantFromCtx(c *gin.Context) *Tenant {
 	return &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
 }
 
+// AuthzFunc returns a per-route RBAC gate for (resource, action). Supplied by the
+// caller (app wiring) so this package needn't import iam.
+type AuthzFunc func(resource, action string) gin.HandlerFunc
+
 // RegisterAdminRoutes mounts /admin/members, /admin/tenant under an auth+tenant group.
-// Caller is responsible for gating these with tenant_admin RBAC.
-func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
+// Caller is responsible for gating these with tenant_admin RBAC; authz adds the
+// per-route permission gate for import/export (dept:write / member:write etc).
+func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
 	r.GET("/admin/members", func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
+		// Per-endpoint ceiling of 100 (tighter than kernel's global clamp).
+		p = p.Normalize()
+		if p.PageSize > 100 {
+			p.PageSize = 100
+		}
 		t := &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
 		cmd := ListMembersCmd{Page: p, Search: c.Query("search"), Subtree: c.Query("subtree") == "true"}
 		if dq := c.Query("dept_id"); dq != "" {
@@ -37,12 +47,20 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 			}
 			cmd.DeptID = &did
 		}
-		members, err := svc.ListMembers(c.Request.Context(), pool, t, cmd)
+		page, err := svc.ListMembers(c.Request.Context(), pool, t, cmd)
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.OK(c, gin.H{"members": members})
+		// Paginated envelope (data/total/page/page_size). "members" is kept as an
+		// alias of data for back-compat with the existing frontend.
+		apiresp.OK(c, gin.H{
+			"members":   page.Data,
+			"data":      page.Data,
+			"total":     page.Total,
+			"page":      page.Page,
+			"page_size": page.PageSize,
+		})
 	})
 
 	r.PATCH("/admin/members/:id", func(c *gin.Context) {
@@ -192,7 +210,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	registerDeptRoutes(r, svc, pool)
+	registerDeptRoutes(r, svc, pool, authz)
 	registerPostRoutes(r, svc, pool)
 	registerNoticeRoutes(r, svc, pool)
 }

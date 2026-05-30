@@ -10,6 +10,16 @@ import (
 	"github.com/leo/iop/server/internal/shared/tenantdb"
 )
 
+// clampPageSize normalizes pagination then caps page_size at the given max (the
+// per-endpoint ceiling, e.g. 100), tighter than kernel's global clamp.
+func clampPageSize(p kernel.Pagination, max int) kernel.Pagination {
+	p = p.Normalize()
+	if p.PageSize > max {
+		p.PageSize = max
+	}
+	return p
+}
+
 // parseIDs converts a slice of string ids into kernel.IDs, failing fast on a bad value.
 func parseIDs(ss []string) ([]kernel.ID, error) {
 	out := make([]kernel.ID, 0, len(ss))
@@ -26,9 +36,17 @@ func parseIDs(ss []string) ([]kernel.ID, error) {
 	return out, nil
 }
 
+// AuthzFunc returns a per-route RBAC gate for (resource, action). Supplied by app
+// wiring (iam.RBAC) so import/export routes can carry the member:write gate on top
+// of the group-level TenantAdminRequired.
+type AuthzFunc func(resource, action string) gin.HandlerFunc
+
 // RegisterAdminRoutes mounts /admin/roles + registration-applications endpoints.
-// Caller is expected to admin-gate this group via TenantAdminRequired.
-func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
+// Caller is expected to admin-gate this group via TenantAdminRequired; authz adds
+// the per-route permission gate used by member import/export.
+func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
+	registerMemberImportExportRoutes(r, svc, pool, authz)
+
 	// Registration applications.
 	// Tenant admins see only applications targeting their tenant; platform admins see all.
 	r.GET("/admin/registrations", func(c *gin.Context) {
@@ -235,6 +253,29 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
+	// Batch policy edit: apply adds + removes in one transaction. Coexists with the
+	// single add/remove routes above (used by the role editor's bulk save).
+	r.POST("/admin/roles/:id/policies/batch", func(c *gin.Context) {
+		rid, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "角色 ID 无效", err))
+			return
+		}
+		var req struct {
+			Add    []PolicyChange `json:"add"`
+			Remove []PolicyChange `json:"remove"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.BatchPolicy(c.Request.Context(), rid, req.Add, req.Remove); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
 	r.POST("/admin/members/:id/roles", func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		mid, _ := kernel.ParseID(c.Param("id"))
@@ -387,12 +428,23 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 
 	// --- Cross-tenant platform users ---
 	r.GET("/platform/users", func(c *gin.Context) {
-		users, err := svc.ListUsers(c.Request.Context(), c.Query("search"), 200)
+		var p kernel.Pagination
+		_ = c.ShouldBindQuery(&p)
+		p = clampPageSize(p, 100)
+		page, err := svc.ListUsersPage(c.Request.Context(), c.Query("search"), p)
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.OK(c, gin.H{"users": users})
+		// Paginated envelope (data/total/page/page_size); "users" kept as an alias
+		// of data for back-compat with the existing frontend.
+		apiresp.OK(c, gin.H{
+			"users":     page.Data,
+			"data":      page.Data,
+			"total":     page.Total,
+			"page":      page.Page,
+			"page_size": page.PageSize,
+		})
 	})
 
 	r.POST("/platform/users", func(c *gin.Context) {

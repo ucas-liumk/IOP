@@ -376,6 +376,81 @@ func (s *Service) RemovePolicy(ctx context.Context, roleID kernel.ID, resource, 
 	return err
 }
 
+// PolicyChange is one (resource, action) entry in a batch policy update.
+type PolicyChange struct {
+	Resource string `json:"resource"`
+	Action   string `json:"action"`
+}
+
+// BatchPolicy applies a set of policy additions and removals to a tenant role in a
+// single transaction (all-or-nothing). Adds are idempotent (ON CONFLICT DO
+// NOTHING); removals are no-ops when the rule is absent. Empty resource/action
+// entries are skipped.
+func (s *Service) BatchPolicy(ctx context.Context, roleID kernel.ID, add, remove []PolicyChange) error {
+	pool := s.repo.(*pgRepo).pool
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	for _, p := range remove {
+		if p.Resource == "" || p.Action == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM public.role_policy WHERE role_id = $1 AND resource = $2 AND action = $3`,
+			roleID, p.Resource, p.Action); err != nil {
+			return errors.Wrap(errors.KindDatabase, "iam.batch_policy_failed", "批量更新权限失败", err)
+		}
+	}
+	for _, p := range add {
+		if p.Resource == "" || p.Action == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO public.role_policy (role_id, resource, action, effect)
+			 VALUES ($1,$2,$3,'allow') ON CONFLICT DO NOTHING`,
+			roleID, p.Resource, p.Action); err != nil {
+			return errors.Wrap(errors.KindDatabase, "iam.batch_policy_failed", "批量更新权限失败", err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// BatchPlatformPolicy applies a set of policy additions and removals to a
+// platform role in a single transaction (all-or-nothing). Same semantics as
+// BatchPolicy but against the platform role_policy rows (tenant_id IS NULL role).
+func (s *Service) BatchPlatformPolicy(ctx context.Context, roleID kernel.ID, add, remove []PolicyChange) error {
+	pool := s.repo.(*pgRepo).pool
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	for _, p := range remove {
+		if p.Resource == "" || p.Action == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM public.role_policy WHERE role_id = $1 AND resource = $2 AND action = $3`,
+			roleID, p.Resource, p.Action); err != nil {
+			return errors.Wrap(errors.KindDatabase, "iam.batch_policy_failed", "批量更新权限失败", err)
+		}
+	}
+	for _, p := range add {
+		if p.Resource == "" || p.Action == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO public.role_policy (role_id, resource, action, effect)
+			 VALUES ($1,$2,$3,'allow') ON CONFLICT (role_id, resource, action) DO NOTHING`,
+			roleID, p.Resource, p.Action); err != nil {
+			return errors.Wrap(errors.KindDatabase, "iam.batch_policy_failed", "批量更新权限失败", err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // RevokeRole removes a (memberID, roleID, tenantID) grant.
 func (s *Service) RevokeRole(ctx context.Context, memberID, tenantID, roleID kernel.ID) error {
 	pool := s.repo.(*pgRepo).pool

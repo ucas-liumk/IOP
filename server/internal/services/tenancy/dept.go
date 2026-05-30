@@ -380,7 +380,37 @@ func nullStr(s string) any {
 }
 
 // registerDeptRoutes mounts /admin/depts/* (tenant_admin gated by the caller).
-func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
+// authz adds the per-route dept:write gate on import/export endpoints.
+func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
+	// CSV export / template / import. Registered before the parameterized routes so
+	// the literal paths take precedence. All gated with dept:write.
+	r.GET("/admin/depts/export", authz("dept", "write"), func(c *gin.Context) {
+		rows, err := svc.ExportDepts(c.Request.Context(), pool, tenantFromCtx(c))
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.CSV(c, "departments.csv", rows)
+	})
+
+	r.GET("/admin/depts/template", authz("dept", "write"), func(c *gin.Context) {
+		apiresp.CSV(c, "departments_template.csv", DeptTemplateRows())
+	})
+
+	r.POST("/admin/depts/import", authz("dept", "write"), func(c *gin.Context) {
+		records, err := apiresp.ParseCSVUpload(c, "file")
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		res, err := svc.ImportDepts(c.Request.Context(), pool, tenantFromCtx(c), records)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, res)
+	})
+
 	r.GET("/admin/depts", func(c *gin.Context) {
 		depts, err := svc.ListDepts(c.Request.Context(), pool, tenantFromCtx(c))
 		if err != nil {

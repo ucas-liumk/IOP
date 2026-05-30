@@ -94,6 +94,17 @@ func (s *Service) ListUsers(ctx context.Context, search string, limit int) ([]*P
 	return s.repo.ListUsers(ctx, search, limit)
 }
 
+// ListUsersPage returns one page of platform_users (platform admin only) matching
+// search, plus the total count of matching rows, for server-side pagination.
+func (s *Service) ListUsersPage(ctx context.Context, search string, page kernel.Pagination) (*kernel.Page[*PlatformUser], error) {
+	p := page.Normalize()
+	users, total, err := s.repo.ListUsersPage(ctx, search, p.PageSize, p.Offset())
+	if err != nil {
+		return nil, err
+	}
+	return &kernel.Page[*PlatformUser]{Data: users, Total: total, Page: p.Page, PageSize: p.PageSize}, nil
+}
+
 // GetUser returns the user by ID, or nil if not found.
 func (s *Service) GetUser(ctx context.Context, id kernel.ID) (*PlatformUser, error) {
 	return s.repo.GetUserByID(ctx, id)

@@ -168,6 +168,29 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
+	// Batch policy edit (platform role): apply adds + removes in one transaction.
+	// Coexists with the single add/remove routes above.
+	r.POST("/platform/rbac/roles/:id/policies/batch", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		var req struct {
+			Add    []PolicyChange `json:"add"`
+			Remove []PolicyChange `json:"remove"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.BatchPlatformPolicy(c.Request.Context(), id, req.Add, req.Remove); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
 	r.POST("/platform/rbac/roles/:id/members", PlatformAuthz(svc, aud, "authz", "grant"), func(c *gin.Context) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		id, err := kernel.ParseID(c.Param("id"))

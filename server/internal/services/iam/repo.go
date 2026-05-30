@@ -23,6 +23,9 @@ type Repository interface {
 	GetUserByLogin(ctx context.Context, login string) (*PlatformUser, error)
 	GetUserByID(ctx context.Context, id kernel.ID) (*PlatformUser, error)
 	ListUsers(ctx context.Context, search string, limit int) ([]*PlatformUser, error)
+	// ListUsersPage returns one page of platform_users matching search plus the
+	// total count of matching rows (for server-side pagination).
+	ListUsersPage(ctx context.Context, search string, limit, offset int) ([]*PlatformUser, int, error)
 	UpdateUserStatus(ctx context.Context, id kernel.ID, status string) error
 	UpdateUserPassword(ctx context.Context, id kernel.ID, hash string) error
 	SetPasswordMustChange(ctx context.Context, id kernel.ID, must bool) error
@@ -200,6 +203,52 @@ func (r *pgRepo) ListUsers(ctx context.Context, search string, limit int) ([]*Pl
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+func (r *pgRepo) ListUsersPage(ctx context.Context, search string, limit, offset int) ([]*PlatformUser, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	search = strings.TrimSpace(search)
+	var total int
+	var rows pgx.Rows
+	var err error
+	if search == "" {
+		if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM public.platform_user`).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		rows, err = r.pool.Query(ctx,
+			`SELECT `+userSelectCols+` FROM public.platform_user
+			 ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	} else {
+		pattern := "%" + strings.ToLower(search) + "%"
+		if err := r.pool.QueryRow(ctx,
+			`SELECT count(*) FROM public.platform_user
+			 WHERE LOWER(COALESCE(username,'')) LIKE $1
+			    OR LOWER(COALESCE(email,'')) LIKE $1
+			    OR COALESCE(phone,'') LIKE $1`, pattern).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		rows, err = r.pool.Query(ctx,
+			`SELECT `+userSelectCols+` FROM public.platform_user
+			 WHERE LOWER(COALESCE(username,'')) LIKE $1
+			    OR LOWER(COALESCE(email,'')) LIKE $1
+			    OR COALESCE(phone,'') LIKE $1
+			 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, pattern, limit, offset)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []*PlatformUser{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, u)
+	}
+	return out, total, rows.Err()
 }
 
 func (r *pgRepo) UpdateUserStatus(ctx context.Context, id kernel.ID, status string) error {

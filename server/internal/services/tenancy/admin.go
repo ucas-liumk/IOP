@@ -45,9 +45,11 @@ type ListMembersCmd struct {
 	Subtree bool       // when DeptID set, also include descendant departments
 }
 
-// ListMembers returns members of the current tenant (via TenantContext) + their
-// posts. Supports free-text search and a department filter (optionally subtree).
-func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant, cmd ListMembersCmd) ([]MemberRow, error) {
+// ListMembers returns one page of members of the current tenant (via
+// TenantContext) + their posts, plus the total count of rows matching the same
+// filters (search / dept_id / subtree). Supports free-text search and a
+// department filter (optionally subtree).
+func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant, cmd ListMembersCmd) (*kernel.Page[MemberRow], error) {
 	p := cmd.Page.Normalize()
 
 	// Resolve dept filter ids (subtree expansion is computed from the in-Go tree).
@@ -79,30 +81,44 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 		return nil, err
 	}
 
-	args := []any{p.PageSize, p.Offset()}
-	idx := 3
+	// Build the shared WHERE clause once (with its own arg list) so the page query
+	// and the COUNT(*) total apply identical filters.
+	filterArgs := []any{}
+	fidx := 1
 	where := ""
 	if cmd.Search != "" {
 		// Primary search is over display_name / username / phone (identity is
 		// username/phone-first). department is kept as a convenience match.
-		where += fmt.Sprintf(" AND (m.display_name ILIKE $%d OR COALESCE(u.username,'') ILIKE $%d OR COALESCE(m.phone,'') ILIKE $%d OR COALESCE(m.department,'') ILIKE $%d)", idx, idx, idx, idx)
-		args = append(args, "%"+cmd.Search+"%")
-		idx++
+		where += fmt.Sprintf(" AND (m.display_name ILIKE $%d OR COALESCE(u.username,'') ILIKE $%d OR COALESCE(m.phone,'') ILIKE $%d OR COALESCE(m.department,'') ILIKE $%d)", fidx, fidx, fidx, fidx)
+		filterArgs = append(filterArgs, "%"+cmd.Search+"%")
+		fidx++
 	}
 	if cmd.DeptID != nil {
-		where += fmt.Sprintf(" AND m.dept_id = ANY($%d)", idx)
-		args = append(args, deptFilter)
-		idx++
+		where += fmt.Sprintf(" AND m.dept_id = ANY($%d)", fidx)
+		filterArgs = append(filterArgs, deptFilter)
+		fidx++
 	}
+
+	// Total matching rows (same filters, no LIMIT/OFFSET).
+	var total int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM member m
+		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
+		 WHERE 1=1`+where, filterArgs...).Scan(&total); err != nil {
+		return nil, err
+	}
+
+	args := append([]any{}, filterArgs...)
+	args = append(args, p.PageSize, p.Offset())
 	rows, err := tx.Query(ctx,
 		`SELECT m.id, m.platform_user_id, COALESCE(u.username,''), m.display_name, COALESCE(m.email,''),
 		        COALESCE(m.department,''), m.dept_id, COALESCE(m.title,''), COALESCE(m.phone,''),
 		        m.status, to_char(m.joined_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM member m
 		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
-		 WHERE 1=1`+where+`
+		 WHERE 1=1`+where+fmt.Sprintf(`
 		 ORDER BY m.joined_at DESC
-		 LIMIT $1 OFFSET $2`, args...)
+		 LIMIT $%d OFFSET $%d`, fidx, fidx+1), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +168,10 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 			}
 		}
 	}
-	return out, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &kernel.Page[MemberRow]{Data: out, Total: total, Page: p.Page, PageSize: p.PageSize}, nil
 }
 
 // UpdateMember updates editable fields on a member row in the tenant schema.
