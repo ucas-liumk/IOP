@@ -1,8 +1,13 @@
 <template>
   <section class="admin-page">
-    <PageHeader title="用户管理" :sub="`左选组织，右管其成员（按部门树筛选 / 导入导出 / 角色岗位） · 平台共 ${tenants.length} 家组织`">
+    <PageHeader :title="'用户管理'" :sub="tabMode === 'org' ? `左选组织，右管其成员（按部门树筛选 / 导入导出 / 角色岗位） · 平台共 ${tenants.length} 家组织` : `全部平台账号 · 共 ${allUsersTotal} 个`">
       <template #actions>
         <div class="head-actions">
+          <!-- Segmented control / tab switcher -->
+          <div class="seg-ctrl">
+            <button class="seg-btn" :class="{ active: tabMode === 'org' }" @click="tabMode = 'org'">按组织</button>
+            <button class="seg-btn" :class="{ active: tabMode === 'all' }" @click="tabMode = 'all'">全部平台账号</button>
+          </div>
           <button class="btn btn-ghost" @click="reload">刷新</button>
           <button class="btn btn-primary" v-perm="'user:write'" @click="openCreate">+ 新建用户</button>
         </div>
@@ -14,7 +19,8 @@
       <button class="page-error-close" @click="actionError = ''">×</button>
     </div>
 
-    <div class="two-pane">
+    <!-- ===== TAB: 按组织 ===== -->
+    <div v-if="tabMode === 'org'" class="two-pane">
       <!-- LEFT: organization (tenant) list -->
       <aside class="org-pane card">
         <div class="org-pane-head">
@@ -77,6 +83,80 @@
       </div>
     </div>
 
+    <!-- ===== TAB: 全部平台账号 ===== -->
+    <div v-else class="all-users-pane card">
+      <div class="all-users-toolbar">
+        <input
+          class="input search-md"
+          v-model="allSearch"
+          placeholder="搜索账户名 / 手机号…"
+          @input="onAllSearchInput"
+        />
+        <span class="spacer" />
+        <span class="user-count-hint">共 {{ allUsersTotal }} 个账号</span>
+      </div>
+
+      <div v-if="allLoading" class="all-loading">
+        <LoadingSpinner />
+        <span>加载中…</span>
+      </div>
+
+      <template v-else>
+        <div v-if="allUsers.length === 0" class="all-empty">
+          <EmptyState title="暂无平台账号" sub="可通过「新建用户」按钮创建" icon="◫" />
+        </div>
+
+        <table v-else class="all-table">
+          <thead>
+            <tr>
+              <th>账户名</th>
+              <th>手机</th>
+              <th>状态</th>
+              <th>创建时间</th>
+              <th>最近登录</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="u in allUsers" :key="u.id">
+              <td class="col-username">
+                <span class="username-primary">{{ u.username || '—' }}</span>
+                <span v-if="u.email" class="username-email">{{ u.email }}</span>
+              </td>
+              <td>{{ u.phone || '—' }}</td>
+              <td>
+                <span class="status-tag" :class="u.status === 'active' ? 'status-active' : 'status-suspended'">
+                  <span class="dot"></span>{{ u.status === 'active' ? '启用' : '停用' }}
+                </span>
+              </td>
+              <td class="col-time">{{ formatTime(u.created_at) }}</td>
+              <td class="col-time">{{ u.last_login_at ? formatTime(u.last_login_at) : '—' }}</td>
+              <td>
+                <div class="row-actions">
+                  <button class="btn btn-ghost btn-sm" v-perm="'user:write'" @click="openResetPwd(u)">重置密码</button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    :class="u.status === 'active' ? 'btn-danger-ghost' : ''"
+                    v-perm="'user:write'"
+                    @click="toggleUserStatus(u)"
+                  >{{ u.status === 'active' ? '停用' : '启用' }}</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <Pagination
+          v-if="allUsersTotal > 0"
+          :total="allUsersTotal"
+          :page="allPage"
+          :pageSize="allPageSize"
+          @update:page="onAllPageChange"
+          @update:pageSize="onAllPageSizeChange"
+        />
+      </template>
+    </div>
+
     <!-- Create platform user modal -->
     <div v-if="creating" class="modal-overlay" @click.self="closeCreate">
       <div class="modal">
@@ -126,29 +206,60 @@
         </div>
       </div>
     </div>
+
+    <!-- Reset password modal -->
+    <div v-if="resetPwdUser" class="modal-overlay" @click.self="closeResetPwd">
+      <div class="modal">
+        <h3>重置密码</h3>
+        <p class="modal-sub">为账号 <strong>{{ resetPwdUser.username || resetPwdUser.phone || resetPwdUser.id }}</strong> 设置新密码。</p>
+        <label class="field">
+          <span class="label">新密码</span>
+          <input class="input" v-model="resetPwdValue" type="text" minlength="10"
+                 placeholder="至少 10 位，含字母与数字" />
+          <button type="button" class="btn-link" @click="resetPwdValue = randomPassword()">生成强密码</button>
+        </label>
+        <div v-if="actionError" class="form-error">{{ actionError }}</div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="closeResetPwd">取消</button>
+          <button class="btn btn-primary" :disabled="busy" @click="confirmResetPwd">
+            {{ busy ? '重置中…' : '确认重置' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
-import { PageHeader, EmptyState, MemberManager, type MemberApi } from "@/shell/components";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { PageHeader, EmptyState, MemberManager, Pagination, LoadingSpinner, type MemberApi } from "@/shell/components";
 import {
-  listAllTenants, createPlatformUser, type PlatformTenant,
+  listAllTenants, createPlatformUser,
+  listPlatformUsersPaged, disablePlatformUser, enablePlatformUser, resetPlatformUserPassword,
+  type PlatformTenant, type PlatformUser,
 } from "../api/admin";
 import {
   orgMemberApi, orgMemberTemplateUrl, orgMemberImportUrl,
 } from "@/modules/platform/api/orgs";
+import { useNotification } from "@/shell/notify";
+import { useConfirm } from "@/shell/confirm";
 
+const notify = useNotification();
+const { confirm } = useConfirm();
+
+// ==================== Shared state ====================
 const tenants = ref<PlatformTenant[]>([]);
-const orgFilter = ref("");
 const loading = ref(false);
 const busy = ref(false);
 const actionError = ref("");
 
-// Selected org → drives the right-hand member manager.
+// Current tab: "org" | "all"
+const tabMode = ref<"org" | "all">("org");
+
+// ==================== 按组织 tab ====================
+const orgFilter = ref("");
 const selectedOrgId = ref<string | null>(null);
 const selectedOrg = computed(() => tenants.value.find((t) => t.id === selectedOrgId.value) ?? null);
-// New adapter per selected org; <MemberManager :key> remounts on org change.
 const orgApi = computed<MemberApi | null>(() => (selectedOrg.value ? orgMemberApi(selectedOrg.value.id) : null));
 
 const filteredTenants = computed(() => {
@@ -161,6 +272,121 @@ function selectOrg(t: PlatformTenant) {
   selectedOrgId.value = t.id;
 }
 
+// ==================== 全部平台账号 tab ====================
+const allUsers = ref<PlatformUser[]>([]);
+const allUsersTotal = ref(0);
+const allPage = ref(1);
+const allPageSize = ref(20);
+const allSearch = ref("");
+const allLoading = ref(false);
+
+let allSearchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onAllSearchInput() {
+  if (allSearchTimer) clearTimeout(allSearchTimer);
+  allSearchTimer = setTimeout(() => {
+    allPage.value = 1;
+    loadAllUsers();
+  }, 300);
+}
+
+function onAllPageChange(p: number) {
+  allPage.value = p;
+  loadAllUsers();
+}
+
+function onAllPageSizeChange(s: number) {
+  allPageSize.value = s;
+  allPage.value = 1;
+  loadAllUsers();
+}
+
+async function loadAllUsers() {
+  allLoading.value = true;
+  try {
+    const result = await listPlatformUsersPaged({
+      page: allPage.value,
+      pageSize: allPageSize.value,
+      search: allSearch.value.trim() || undefined,
+    });
+    allUsers.value = result.data;
+    allUsersTotal.value = result.total;
+    allPage.value = result.page;
+    allPageSize.value = result.pageSize;
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "加载用户列表失败");
+  } finally {
+    allLoading.value = false;
+  }
+}
+
+// Load all-users list when switching to that tab.
+watch(tabMode, (m) => {
+  if (m === "all") loadAllUsers();
+});
+
+// ==================== Reset password ====================
+const resetPwdUser = ref<PlatformUser | null>(null);
+const resetPwdValue = ref("");
+
+function openResetPwd(u: PlatformUser) {
+  resetPwdUser.value = u;
+  resetPwdValue.value = randomPassword();
+  actionError.value = "";
+}
+function closeResetPwd() {
+  resetPwdUser.value = null;
+  resetPwdValue.value = "";
+}
+async function confirmResetPwd() {
+  if (!resetPwdUser.value) return;
+  if (!resetPwdValue.value || resetPwdValue.value.length < 10) {
+    actionError.value = "密码至少 10 位";
+    return;
+  }
+  busy.value = true;
+  actionError.value = "";
+  try {
+    await resetPlatformUserPassword(resetPwdUser.value.id, resetPwdValue.value);
+    notify.success("密码已重置");
+    closeResetPwd();
+  } catch (e: any) {
+    actionError.value = e.response?.data?.error?.message ?? "重置失败";
+  } finally {
+    busy.value = false;
+  }
+}
+
+// ==================== Disable / Enable ====================
+async function toggleUserStatus(u: PlatformUser) {
+  const isActive = u.status === "active";
+  const label = u.username || u.phone || u.id;
+  const ok = await confirm({
+    title: isActive ? "确认停用" : "确认启用",
+    message: isActive
+      ? `确定停用账号「${label}」？该账号将无法登录。`
+      : `确定启用账号「${label}」？`,
+    danger: isActive,
+  });
+  if (!ok) return;
+  busy.value = true;
+  try {
+    if (isActive) {
+      await disablePlatformUser(u.id);
+    } else {
+      await enablePlatformUser(u.id);
+    }
+    notify.success(isActive ? "账号已停用" : "账号已启用");
+    // Refresh the list in place.
+    await loadAllUsers();
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "操作失败");
+  } finally {
+    busy.value = false;
+  }
+}
+
+// ==================== Lifecycle ====================
 onMounted(reload);
 async function reload() {
   loading.value = true;
@@ -169,10 +395,13 @@ async function reload() {
     if (selectedOrgId.value && !tenants.value.some((t) => t.id === selectedOrgId.value)) {
       selectedOrgId.value = null;
     }
+    if (tabMode.value === "all") {
+      await loadAllUsers();
+    }
   } finally { loading.value = false; }
 }
 
-// === Create platform user modal ===
+// ==================== Create platform user modal ====================
 const creating = ref(false);
 const form = reactive({
   username: "", real_name: "", phone: "",
@@ -198,11 +427,16 @@ async function confirmCreate() {
   try {
     await createPlatformUser({ ...form });
     creating.value = false;
+    notify.success("用户已创建");
     // If the new user joined the currently-selected org, remount the manager to refresh.
     if (form.organization_id === selectedOrgId.value) {
       const cur = selectedOrgId.value;
       selectedOrgId.value = null;
       await nextTickReselect(cur);
+    }
+    // Also refresh the flat list if it's been loaded.
+    if (tabMode.value === "all" || allUsersTotal.value > 0) {
+      await loadAllUsers();
     }
   } catch (e: any) {
     actionError.value = e.response?.data?.error?.message ?? "创建失败";
@@ -215,6 +449,7 @@ async function nextTickReselect(id: string | null) {
   selectedOrgId.value = id;
 }
 
+// ==================== Helpers ====================
 function statusLabel(s: string) {
   return ({ active: "运行中", suspended: "已暂停", closed: "已关闭" } as Record<string, string>)[s] ?? s;
 }
@@ -228,6 +463,12 @@ function colorFor(name: string) {
     "linear-gradient(135deg,#1aa971,#0e7b51)",
   ];
   return palette[seed % palette.length];
+}
+function formatTime(s: string): string {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 function randPick(set: string): string {
   const max = 256 - (256 % set.length);
@@ -256,7 +497,7 @@ function cryptoIndex(n: number): number {
 
 <style scoped>
 .admin-page { display: flex; flex-direction: column; gap: var(--sp-5); }
-.head-actions { display: flex; gap: 8px; }
+.head-actions { display: flex; gap: 8px; align-items: center; }
 .page-error {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--danger-soft); color: var(--danger);
@@ -264,9 +505,30 @@ function cryptoIndex(n: number): number {
 }
 .page-error-close { border: 0; background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
 
+/* Segmented control */
+.seg-ctrl {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.seg-btn {
+  border: 0;
+  background: transparent;
+  padding: 5px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-2);
+  transition: background .12s, color .12s;
+  white-space: nowrap;
+}
+.seg-btn:hover { background: var(--surface); color: var(--text); }
+.seg-btn.active { background: var(--surface); color: var(--primary); font-weight: 600; }
+
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 
-/* two-pane shell: org list | member manager */
+/* ====== 按组织 tab ====== */
 .two-pane { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 
 /* LEFT pane */
@@ -311,7 +573,48 @@ code.mono { color: var(--text-2); }
 .org-banner-name { font-size: 15px; font-weight: 600; color: var(--text); }
 .org-banner-slug { font-size: 11.5px; color: var(--text-3); }
 
-/* modal */
+/* ====== 全部平台账号 tab ====== */
+.all-users-pane { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.all-users-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
+}
+.search-md {
+  width: 260px; font-size: 13px; padding: 6px 10px;
+  border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface);
+}
+.search-md:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.spacer { flex: 1; }
+.user-count-hint { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.all-loading { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 13px; padding: 20px 0; }
+.all-empty { padding: 8px 0; }
+
+.all-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+.all-table th {
+  text-align: left; padding: 8px 10px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.all-table td {
+  padding: 10px 10px; border-bottom: 1px solid var(--border);
+  color: var(--text); vertical-align: middle;
+}
+.all-table tr:last-child td { border-bottom: 0; }
+.all-table tr:hover td { background: var(--surface-2); }
+
+.col-username { min-width: 120px; }
+.username-primary { font-weight: 600; display: block; }
+.username-email { font-size: 11.5px; color: var(--text-3); display: block; margin-top: 1px; }
+.col-time { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+
+.row-actions { display: flex; gap: 6px; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-danger-ghost { color: var(--danger); border-color: var(--danger-soft); }
+.btn-danger-ghost:hover { background: var(--danger-soft); }
+
+/* ====== modal ====== */
 .modal-overlay { position: fixed; inset: 0; background: rgba(13, 27, 46, .45); display: grid; place-items: center; z-index: 100; backdrop-filter: blur(3px); }
 .modal { background: var(--surface); border-radius: 14px; padding: 22px; width: min(440px, 92vw); box-shadow: var(--sh-4); display: flex; flex-direction: column; gap: 12px; }
 .modal h3 { font-size: 16px; font-weight: 600; margin: 0; }
