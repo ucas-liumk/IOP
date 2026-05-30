@@ -8,36 +8,158 @@ export async function getMyAdminFlags(): Promise<MeAdmin> {
   } catch { return { is_tenant_admin: false, is_platform_admin: false }; }
 }
 
+export interface MemberPost { post_id: string; code: string; name: string }
 export interface Member {
   member_id: string; platform_user_id: string;
   display_name: string; email: string;
-  department: string; title: string; phone: string;
+  department: string; dept_id?: string | null; title: string; phone: string;
   status: string; joined_at: string;
+  posts: MemberPost[];
 }
-export async function listMembers(search = ""): Promise<Member[]> {
-  const r = await client.get("/admin/members", { params: search ? { search } : {} });
+export interface ListMembersParams {
+  search?: string;
+  dept_id?: string;
+  subtree?: boolean;
+}
+export async function listMembers(params: ListMembersParams | string = {}): Promise<Member[]> {
+  // Back-compat: a bare string is treated as the search term.
+  const p: ListMembersParams = typeof params === "string" ? { search: params } : params;
+  const query: Record<string, string> = {};
+  if (p.search) query.search = p.search;
+  if (p.dept_id) query.dept_id = p.dept_id;
+  if (p.subtree) query.subtree = "true";
+  const r = await client.get("/admin/members", { params: query });
   return r.data?.data?.members ?? [];
 }
-export async function updateMember(id: string, patch: Partial<Pick<Member,'display_name'|'department'|'title'|'phone'>>) {
+// updateMember: dept_id is tri-state on the wire — omit to leave unchanged,
+// "" / null to clear, an id to assign. Pass `dept_id` key only when changing it.
+export async function updateMember(
+  id: string,
+  patch: Partial<Pick<Member, "display_name" | "department" | "title" | "phone">> & { dept_id?: string | null },
+) {
   await client.patch(`/admin/members/${id}`, patch);
+}
+export async function setMemberDept(id: string, deptId: string | null) {
+  await client.patch(`/admin/members/${id}`, { dept_id: deptId ?? "" });
 }
 export async function setMemberDisabled(id: string, disabled: boolean) {
   await client.post(`/admin/members/${id}/${disabled ? 'disable' : 'enable'}`);
 }
+export async function assignMemberPost(memberId: string, postId: string) {
+  await client.post(`/admin/members/${memberId}/posts`, { post_id: postId });
+}
+export async function removeMemberPost(memberId: string, postId: string) {
+  await client.delete(`/admin/members/${memberId}/posts/${postId}`);
+}
+
+// === Departments (部门) ===
+export interface Dept {
+  id: string;
+  name: string;
+  parent_id?: string | null;
+  order_num: number;
+  leader?: string;
+  phone?: string;
+  email?: string;
+  status: string;
+  created_at: string;
+}
+export interface DeptTreeNode extends Dept {
+  children?: DeptTreeNode[];
+}
+export async function listDepts(): Promise<Dept[]> {
+  const r = await client.get("/admin/depts");
+  return r.data?.data?.depts ?? [];
+}
+export async function getDeptTree(): Promise<DeptTreeNode[]> {
+  const r = await client.get("/admin/depts/tree");
+  return r.data?.data?.tree ?? [];
+}
+export async function createDept(payload: {
+  name: string; parent_id?: string | null; order_num?: number;
+  leader?: string; phone?: string; email?: string;
+}): Promise<Dept> {
+  const r = await client.post("/admin/depts", payload);
+  return r.data?.data as Dept;
+}
+export async function updateDept(id: string, patch: Partial<Pick<Dept, "name" | "order_num" | "leader" | "phone" | "email" | "status">>) {
+  await client.patch(`/admin/depts/${id}`, patch);
+}
+export async function deleteDept(id: string) {
+  await client.delete(`/admin/depts/${id}`);
+}
+export async function moveDept(id: string, parentId: string | null) {
+  await client.post(`/admin/depts/${id}/move`, { parent_id: parentId ?? "" });
+}
+
+// === Posts (岗位) ===
+export interface Post {
+  id: string;
+  code: string;
+  name: string;
+  order_num: number;
+  status: string;
+  created_at: string;
+}
+export async function listPosts(): Promise<Post[]> {
+  const r = await client.get("/admin/posts");
+  return r.data?.data?.posts ?? [];
+}
+export async function createPost(payload: { code: string; name: string; order_num?: number }): Promise<Post> {
+  const r = await client.post("/admin/posts", payload);
+  return r.data?.data as Post;
+}
+export async function updatePost(id: string, patch: Partial<Pick<Post, "name" | "order_num" | "status">>) {
+  await client.patch(`/admin/posts/${id}`, patch);
+}
+export async function deletePost(id: string) {
+  await client.delete(`/admin/posts/${id}`);
+}
+
+// === Menu catalog (角色编辑器勾选用) ===
+export interface MenuNode {
+  key: string;
+  title: string;
+  icon: string;
+  path: string;
+  parent: string;
+  type: string;     // "dir" | "menu" | "button"
+  console: string;
+  app: string;
+  perm: string;     // "resource:action"; "" = no perm required
+  order: number;
+  children?: MenuNode[];
+}
+export async function getTenantMenuTree(): Promise<MenuNode[]> {
+  const r = await client.get("/admin/menus");
+  return r.data?.data?.menus ?? [];
+}
 
 export interface PolicyRule { resource: string; action: string; effect: string }
+export type DataScope = "all" | "dept" | "dept_and_sub" | "self" | "custom";
 export interface Role {
   id: string; tenant_id?: string; code: string; name: string;
   built_in: boolean; member_count: number;
+  data_scope: DataScope;
+  dept_ids?: string[];
   policies: PolicyRule[] | null;
 }
 export async function listRoles(): Promise<Role[]> {
   const r = await client.get("/admin/roles");
   return r.data?.data?.roles ?? [];
 }
-export async function createRole(code: string, name: string) {
-  const r = await client.post("/admin/roles", { code, name });
+export async function createRole(payload: {
+  code: string; name: string; data_scope?: DataScope; dept_ids?: string[];
+}): Promise<Role> {
+  const r = await client.post("/admin/roles", payload);
   return r.data?.data as Role;
+}
+// updateRole patches name / data_scope / dept_ids (code is immutable for builtin
+// roles server-side). Omit a field to leave it unchanged.
+export async function updateRole(id: string, patch: {
+  name?: string; code?: string; data_scope?: DataScope; dept_ids?: string[];
+}) {
+  await client.patch(`/admin/roles/${id}`, patch);
 }
 export async function deleteRole(id: string) { await client.delete(`/admin/roles/${id}`); }
 export async function addPolicy(roleId: string, resource: string, action: string) {

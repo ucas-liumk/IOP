@@ -1,144 +1,386 @@
 <template>
-  <section>
-    <header class="page-head">
-      <div>
-        <h1>成员管理</h1>
-        <p class="sub">共 {{ members.length }} 名成员 · 演示账号支持编辑姓名/部门/职位/电话</p>
-      </div>
-      <div class="head-actions">
-        <input v-model="search" class="input search-input" placeholder="搜索姓名/邮箱/部门" @keyup.enter="reload" />
-        <button class="btn btn-primary">+ 邀请成员</button>
-      </div>
-    </header>
+  <section class="admin-page">
+    <PageHeader title="用户管理" :sub="`共 ${members.length} 名成员${activeDeptName ? ' · ' + activeDeptName : ''}`">
+      <template #actions>
+        <input class="input search" v-model="search" placeholder="搜索姓名 / 邮箱 / 部门" @keyup.enter="reload" />
+        <button class="btn btn-ghost" @click="reload">刷新</button>
+        <button class="btn btn-ghost" @click="exportCsv">导出 CSV</button>
+        <button class="btn btn-ghost" v-perm="'member:write'" @click="triggerImport">导入 CSV</button>
+        <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onImportFile" />
+      </template>
+    </PageHeader>
 
-    <article class="card">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th style="width: 200px">成员</th>
-            <th>邮箱</th>
-            <th style="width: 110px">部门</th>
-            <th style="width: 110px">职位</th>
-            <th style="width: 80px">状态</th>
-            <th style="width: 120px">加入时间</th>
-            <th style="width: 140px"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="m in members" :key="m.member_id" :class="{ disabled: m.status === 'disabled' }">
-            <td>
-              <div class="member-cell">
-                <div class="avatar" :style="{ background: avatarColor(m.display_name) }">{{ m.display_name[0] }}</div>
-                <div>
-                  <div class="name">{{ m.display_name }}</div>
-                  <div class="email-tiny">{{ m.email }}</div>
-                </div>
+    <div class="split">
+      <!-- Left: department tree filter -->
+      <article class="card tree-pane">
+        <div class="pane-head">按部门筛选</div>
+        <div class="filter-all" :class="{ active: !activeDeptId }" @click="filterDept(null)">全部成员</div>
+        <label class="subtree-toggle">
+          <input type="checkbox" v-model="subtree" @change="reload" /> 含子部门
+        </label>
+        <TreeView
+          :nodes="deptTree"
+          :selected-id="activeDeptId"
+          id-key="id"
+          label-key="name"
+          @select="filterDept"
+        />
+      </article>
+
+      <!-- Right: members table -->
+      <div class="members-pane">
+        <DataTable :columns="columns" :rows="members" rowKey="member_id" emptyText="暂无成员">
+          <template #cell-member="{ row }">
+            <div class="member-cell" :class="{ off: row.status !== 'active' }">
+              <div class="avatar" :style="{ background: avatarColor(row.display_name) }">{{ (row.display_name || '?')[0] }}</div>
+              <div>
+                <div class="name">{{ row.display_name }}</div>
+                <div class="email-tiny">{{ row.email }}</div>
               </div>
-            </td>
-            <td><code>{{ m.email }}</code></td>
-            <td><span class="chip-dept">{{ m.department || '—' }}</span></td>
-            <td class="muted">{{ m.title || '—' }}</td>
-            <td>
-              <span class="badge" :class="m.status === 'active' ? 'badge-success' : 'badge-neutral'">
-                {{ m.status === 'active' ? '正常' : '已禁用' }}
-              </span>
-            </td>
-            <td class="time">{{ m.joined_at.slice(0, 10) }}</td>
-            <td class="actions">
-              <button class="link-btn" @click="openEdit(m)">编辑</button>
-              <button class="link-btn warn" @click="toggleStatus(m)">{{ m.status === 'active' ? '禁用' : '启用' }}</button>
-            </td>
-          </tr>
-          <tr v-if="members.length === 0"><td colspan="7" class="empty">暂无成员</td></tr>
-        </tbody>
-      </table>
-    </article>
+            </div>
+          </template>
+          <template #cell-department="{ row }">
+            <span class="chip-dept">{{ row.department || '未分配' }}</span>
+          </template>
+          <template #cell-posts="{ row }">
+            <span v-if="!row.posts?.length" class="muted">—</span>
+            <span v-for="p in row.posts" :key="p.post_id" class="chip-post">{{ p.name }}</span>
+          </template>
+          <template #cell-status="{ row }">
+            <span class="badge" :class="row.status === 'active' ? 'badge-success' : 'badge-neutral'">
+              {{ row.status === 'active' ? '正常' : '已禁用' }}
+            </span>
+          </template>
+          <template #cell-actions="{ row }">
+            <div class="row-actions">
+              <button class="btn btn-ghost btn-sm" v-perm="'member:write'" @click="openRoles(row)">角色</button>
+              <button class="btn btn-ghost btn-sm" v-perm="'member:write'" @click="openPosts(row)">岗位</button>
+              <button class="btn btn-ghost btn-sm" v-perm="'member:write'" @click="openDept(row)">部门</button>
+              <button class="btn btn-ghost btn-sm" v-perm="'member:write'" @click="openReset(row)">重置密码</button>
+              <button class="btn btn-ghost btn-sm" :class="{ danger: row.status === 'active' }" v-perm="'member:write'" @click="toggleStatus(row)">
+                {{ row.status === 'active' ? '禁用' : '启用' }}
+              </button>
+            </div>
+          </template>
+        </DataTable>
+      </div>
+    </div>
 
-    <!-- Edit Modal -->
-    <div v-if="editing" class="modal-overlay" @click.self="editing = null">
+    <!-- Roles modal -->
+    <div v-if="rolesFor" class="modal-overlay" @click.self="rolesFor = null">
       <div class="modal">
-        <header class="modal-head">
-          <h3>编辑成员</h3>
-          <button class="close-btn" @click="editing = null">×</button>
-        </header>
-        <div class="modal-body">
-          <label class="field">
-            <span class="label">姓名</span>
-            <input class="input" v-model="form.display_name" required />
-          </label>
-          <label class="field">
-            <span class="label">部门</span>
-            <input class="input" v-model="form.department" placeholder="例如：工程部" />
-          </label>
-          <label class="field">
-            <span class="label">职位</span>
-            <input class="input" v-model="form.title" placeholder="例如：高级工程师" />
-          </label>
-          <label class="field">
-            <span class="label">电话</span>
-            <input class="input" v-model="form.phone" placeholder="可选" />
-          </label>
+        <h3>分配角色 · {{ rolesFor.display_name }}</h3>
+        <p class="modal-sub">勾选授予，取消勾选撤销。</p>
+        <ul class="check-list">
+          <li v-for="r in allRoles" :key="r.id">
+            <label>
+              <input type="checkbox" :checked="memberRoleIds.has(r.id)" :disabled="busy" @change="toggleRole(r, ($event.target as HTMLInputElement).checked)" />
+              <span class="r-name">{{ r.name }}</span>
+              <code class="r-code">{{ r.code }}</code>
+              <span v-if="r.built_in" class="tag-builtin">内置</span>
+            </label>
+          </li>
+          <li v-if="allRoles.length === 0" class="muted">尚无角色，请先在「角色管理」创建。</li>
+        </ul>
+        <div class="modal-actions">
+          <button class="btn btn-primary" @click="closeRoles">完成</button>
         </div>
-        <footer class="modal-foot">
-          <button class="btn" @click="editing = null">取消</button>
-          <button class="btn btn-primary" @click="save" :disabled="saving">{{ saving ? "保存中..." : "保存" }}</button>
-        </footer>
+      </div>
+    </div>
+
+    <!-- Posts modal -->
+    <div v-if="postsFor" class="modal-overlay" @click.self="postsFor = null">
+      <div class="modal">
+        <h3>分配岗位 · {{ postsFor.display_name }}</h3>
+        <p class="modal-sub">勾选授予,取消勾选移除。</p>
+        <ul class="check-list">
+          <li v-for="p in allPosts" :key="p.id">
+            <label>
+              <input type="checkbox" :checked="memberPostIds.has(p.id)" :disabled="busy" @change="togglePost(p, ($event.target as HTMLInputElement).checked)" />
+              <span class="r-name">{{ p.name }}</span>
+              <code class="r-code">{{ p.code }}</code>
+            </label>
+          </li>
+          <li v-if="allPosts.length === 0" class="muted">尚无岗位，请先在「岗位管理」创建。</li>
+        </ul>
+        <div class="modal-actions">
+          <button class="btn btn-primary" @click="closePosts">完成</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dept modal -->
+    <div v-if="deptFor" class="modal-overlay" @click.self="deptFor = null">
+      <div class="modal">
+        <h3>设置部门 · {{ deptFor.display_name }}</h3>
+        <label class="field">
+          <span class="label">所属部门</span>
+          <select class="input" v-model="deptChoice">
+            <option value="">（未分配）</option>
+            <option v-for="d in deptFlat" :key="d.id" :value="d.id">{{ d.name }}</option>
+          </select>
+        </label>
+        <div v-if="actionError" class="form-error">{{ actionError }}</div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="deptFor = null">取消</button>
+          <button class="btn btn-primary" :disabled="busy" @click="saveDept">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reset password modal -->
+    <div v-if="resetFor" class="modal-overlay" @click.self="closeReset">
+      <div class="modal">
+        <h3>重置密码 · {{ resetFor.display_name }}</h3>
+        <label class="field">
+          <span class="label">新密码</span>
+          <input class="input" v-model="newPassword" type="text" minlength="10" placeholder="至少 10 位，含字母与数字" />
+          <button type="button" class="btn-link" @click="newPassword = randomPassword()">生成强密码</button>
+        </label>
+        <div v-if="actionError" class="form-error">{{ actionError }}</div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="closeReset">取消</button>
+          <button class="btn btn-primary" :disabled="busy" @click="confirmReset">{{ busy ? '处理中…' : '确认重置' }}</button>
+        </div>
       </div>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { listMembers, setMemberDisabled, updateMember, type Member } from "../api/admin";
+import { computed, onMounted, ref } from "vue";
+import { PageHeader, DataTable, TreeView, type Column } from "@/shell/components";
 import { useNotification } from "@/shell/notify";
+import { useConfirm } from "@/shell/confirm";
+import {
+  listMembers, setMemberDisabled, setMemberDept,
+  assignMemberPost, removeMemberPost,
+  listRoles, getMemberRoles, grantRoleToMember, revokeRoleFromMember,
+  listPosts, getDeptTree, listDepts,
+  resetPlatformUserPassword,
+  type Member, type Role, type Post, type DeptTreeNode, type Dept,
+} from "../api/admin";
 
 const notify = useNotification();
+const { confirm } = useConfirm();
 
 const members = ref<Member[]>([]);
 const search = ref("");
-const editing = ref<Member | null>(null);
-const saving = ref(false);
-const form = reactive({ display_name: "", department: "", title: "", phone: "" });
+const subtree = ref(false);
+const busy = ref(false);
+const actionError = ref("");
 
-onMounted(reload);
+const deptTree = ref<DeptTreeNode[]>([]);
+const deptFlat = ref<Dept[]>([]);
+const activeDeptId = ref<string | null>(null);
+
+const activeDeptName = computed(() => deptFlat.value.find((d) => d.id === activeDeptId.value)?.name ?? "");
+
+const columns: Column[] = [
+  { key: "member",     label: "成员",   width: 240 },
+  { key: "department", label: "部门",   width: 130 },
+  { key: "posts",      label: "岗位" },
+  { key: "status",     label: "状态",   width: 90 },
+  { key: "actions",    label: "操作",   width: 360, align: "right" },
+];
+
+onMounted(async () => {
+  [deptTree.value, deptFlat.value] = await Promise.all([getDeptTree(), listDepts()]);
+  await reload();
+});
 
 async function reload() {
-  members.value = await listMembers(search.value);
+  members.value = await listMembers({
+    search: search.value.trim(),
+    dept_id: activeDeptId.value ?? undefined,
+    subtree: subtree.value,
+  });
 }
 
-function openEdit(m: Member) {
-  editing.value = m;
-  form.display_name = m.display_name;
-  form.department = m.department;
-  form.title = m.title;
-  form.phone = m.phone;
-}
-
-async function save() {
-  if (!editing.value) return;
-  saving.value = true;
-  try {
-    await updateMember(editing.value.member_id, {
-      display_name: form.display_name,
-      department: form.department,
-      title: form.title,
-      phone: form.phone,
-    });
-    editing.value = null;
-    await reload();
-  } catch (e: any) {
-    notify.error(e.response?.data?.error?.message ?? "保存失败");
-  } finally { saving.value = false; }
+function filterDept(id: string | null) {
+  activeDeptId.value = id;
+  reload();
 }
 
 async function toggleStatus(m: Member) {
-  await setMemberDisabled(m.member_id, m.status === "active");
-  await reload();
+  if (m.status === "active") {
+    const ok = await confirm({ title: "禁用成员", message: `确认禁用 ${m.display_name}？`, danger: true });
+    if (!ok) return;
+  }
+  try {
+    await setMemberDisabled(m.member_id, m.status === "active");
+    await reload();
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "操作失败"); }
 }
 
+// === Roles ===
+const rolesFor = ref<Member | null>(null);
+const allRoles = ref<Role[]>([]);
+const memberRoleIds = ref<Set<string>>(new Set());
+
+async function openRoles(m: Member) {
+  rolesFor.value = m;
+  actionError.value = "";
+  if (allRoles.value.length === 0) allRoles.value = await listRoles();
+  const mr = await getMemberRoles(m.member_id);
+  memberRoleIds.value = new Set(mr.map((r) => r.id));
+}
+async function toggleRole(r: Role, checked: boolean) {
+  if (!rolesFor.value) return;
+  busy.value = true;
+  try {
+    if (checked) {
+      await grantRoleToMember(rolesFor.value.member_id, r.code);
+      memberRoleIds.value.add(r.id);
+    } else {
+      await revokeRoleFromMember(rolesFor.value.member_id, r.id);
+      memberRoleIds.value.delete(r.id);
+    }
+    memberRoleIds.value = new Set(memberRoleIds.value);
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "操作失败");
+  } finally { busy.value = false; }
+}
+async function closeRoles() { rolesFor.value = null; await reload(); }
+
+// === Posts ===
+const postsFor = ref<Member | null>(null);
+const allPosts = ref<Post[]>([]);
+const memberPostIds = ref<Set<string>>(new Set());
+
+async function openPosts(m: Member) {
+  postsFor.value = m;
+  actionError.value = "";
+  if (allPosts.value.length === 0) allPosts.value = await listPosts();
+  memberPostIds.value = new Set((m.posts ?? []).map((p) => p.post_id));
+}
+async function togglePost(p: Post, checked: boolean) {
+  if (!postsFor.value) return;
+  busy.value = true;
+  try {
+    if (checked) {
+      await assignMemberPost(postsFor.value.member_id, p.id);
+      memberPostIds.value.add(p.id);
+    } else {
+      await removeMemberPost(postsFor.value.member_id, p.id);
+      memberPostIds.value.delete(p.id);
+    }
+    memberPostIds.value = new Set(memberPostIds.value);
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "操作失败");
+  } finally { busy.value = false; }
+}
+async function closePosts() { postsFor.value = null; await reload(); }
+
+// === Dept ===
+const deptFor = ref<Member | null>(null);
+const deptChoice = ref<string>("");
+function openDept(m: Member) {
+  deptFor.value = m;
+  deptChoice.value = m.dept_id ?? "";
+  actionError.value = "";
+}
+async function saveDept() {
+  if (!deptFor.value) return;
+  busy.value = true; actionError.value = "";
+  try {
+    await setMemberDept(deptFor.value.member_id, deptChoice.value || null);
+    deptFor.value = null;
+    await reload();
+    notify.success("部门已更新");
+  } catch (e: any) {
+    actionError.value = e.response?.data?.error?.message ?? "保存失败";
+  } finally { busy.value = false; }
+}
+
+// === Reset password (via platform user endpoint, keyed by platform_user_id) ===
+const resetFor = ref<Member | null>(null);
+const newPassword = ref("");
+function openReset(m: Member) {
+  resetFor.value = m;
+  newPassword.value = randomPassword();
+  actionError.value = "";
+}
+function closeReset() { resetFor.value = null; newPassword.value = ""; actionError.value = ""; }
+async function confirmReset() {
+  if (!resetFor.value) return;
+  busy.value = true; actionError.value = "";
+  try {
+    await resetPlatformUserPassword(resetFor.value.platform_user_id, newPassword.value);
+    notify.success(`密码已重置为：${newPassword.value}（请妥善记录并通知用户）`, 8000);
+    closeReset();
+  } catch (e: any) {
+    actionError.value = e.response?.data?.error?.message ?? "重置失败（需平台管理员权限）";
+  } finally { busy.value = false; }
+}
+
+// === CSV export / import ===
+function exportCsv() {
+  const header = ["display_name", "email", "department", "title", "phone", "status"];
+  const escape = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [header.join(",")];
+  for (const m of members.value) {
+    lines.push([m.display_name, m.email, m.department, m.title, m.phone, m.status].map(escape).join(","));
+  }
+  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `members-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const fileInput = ref<HTMLInputElement | null>(null);
+function triggerImport() { fileInput.value?.click(); }
+async function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = ""; // allow re-selecting the same file
+  if (!file) return;
+  const text = await file.text();
+  const rows = parseCsv(text);
+  if (rows.length === 0) { notify.warning("CSV 没有可导入的数据行"); return; }
+  notify.info(`已解析 ${rows.length} 行。导入功能为占位：当前后端无批量创建接口，请使用平台用户管理创建账号。`, 7000);
+  // Best-effort placeholder: no tenant member create-by-CSV endpoint exists yet,
+  // so we surface the parse result rather than silently failing. Wiring to a real
+  // bulk endpoint can replace this block when the backend exposes one.
+}
+function parseCsv(text: string): Record<string, string>[] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length < 2) return [];
+  const header = splitCsvLine(lines[0]).map((h) => h.replace(/^﻿/, "").trim());
+  const out: Record<string, string>[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = splitCsvLine(lines[i]);
+    const rec: Record<string, string> = {};
+    header.forEach((h, j) => (rec[h] = (cells[j] ?? "").trim()));
+    out.push(rec);
+  }
+  return out;
+}
+function splitCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else cur += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ",") { out.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// === Helpers ===
 function avatarColor(name: string) {
-  const seed = name.split("").reduce((s, c) => s + c.charCodeAt(0), 0);
+  const seed = (name || "?").split("").reduce((s, c) => s + c.charCodeAt(0), 0);
   const palette = [
     "linear-gradient(135deg,#1e5fd9,#4a85ee)",
     "linear-gradient(135deg,#7c4ddb,#5a2db5)",
@@ -148,126 +390,84 @@ function avatarColor(name: string) {
   ];
   return palette[seed % palette.length];
 }
+function randPick(set: string): string {
+  const max = 256 - (256 % set.length);
+  const buf = new Uint8Array(1);
+  for (;;) { crypto.getRandomValues(buf); if (buf[0] < max) return set[buf[0] % set.length]; }
+}
+function randomPassword(): string {
+  const letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ";
+  const digits = "23456789";
+  const symbols = "!@#$%";
+  const all = letters + digits + symbols;
+  const chars: string[] = [randPick(letters), randPick(digits), randPick(symbols)];
+  for (let i = 0; i < 9; i++) chars.push(randPick(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = cryptoIndex(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+function cryptoIndex(n: number): number {
+  const max = 256 - (256 % n);
+  const buf = new Uint8Array(1);
+  for (;;) { crypto.getRandomValues(buf); if (buf[0] < max) return buf[0] % n; }
+}
 </script>
 
 <style scoped>
-.page-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
-.page-head h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
-.page-head .sub { font-size: 13px; color: var(--text-3); margin-top: 4px; }
-.head-actions { display: flex; gap: 8px; }
-.search-input { width: 220px; height: 34px; font-size: 13px; }
-.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
-.btn:hover { background: var(--bg); }
-.btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
-.btn-primary:hover { background: var(--primary-hover); }
+.admin-page { display: flex; flex-direction: column; gap: var(--sp-5); }
+.search { width: 220px; font-size: 13px; padding: 6px 10px; }
+.hidden-file { display: none; }
 
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-.data-table { width: 100%; border-collapse: collapse; }
-.data-table th {
-  text-align: left;
-  font-size: 11.5px; font-weight: 600;
-  color: var(--text-3); text-transform: uppercase; letter-spacing: .5px;
-  padding: 11px 16px;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border);
-}
-.data-table td {
-  padding: 12px 16px;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border-soft);
-  vertical-align: middle;
-}
-.data-table tbody tr:hover { background: var(--surface-2); }
-.data-table tbody tr:last-child td { border-bottom: 0; }
-.data-table tr.disabled { opacity: 0.55; }
+.split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.tree-pane { padding: 12px; }
+.pane-head { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; padding: 4px 8px 8px; }
+.filter-all { padding: 6px 8px; font-size: 13px; border-radius: 6px; cursor: pointer; color: var(--text-2); }
+.filter-all:hover { background: var(--surface-2); }
+.filter-all.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+.subtree-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); padding: 6px 8px; }
+.members-pane { min-width: 0; }
 
 .member-cell { display: flex; gap: 10px; align-items: center; }
-.avatar {
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  color: white; font-weight: 600; font-size: 12px;
-  display: grid; place-items: center;
-}
-.name { font-weight: 600; }
+.member-cell.off { opacity: .55; }
+.avatar { width: 32px; height: 32px; border-radius: 50%; color: white; font-weight: 600; font-size: 12px; display: grid; place-items: center; }
+.name { font-weight: 600; font-size: 13.5px; }
 .email-tiny { font-size: 11px; color: var(--text-3); margin-top: 1px; }
-.chip-dept {
-  display: inline-block;
-  padding: 2px 8px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11.5px;
-}
-code { background: var(--surface-2); padding: 2px 6px; border-radius: 3px; font-family: var(--ff-mono); font-size: 12px; color: var(--text-2); }
-.muted { color: var(--text-3); }
-.time { color: var(--text-3); font-family: var(--ff-mono); font-size: 12px; }
-
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px; font-weight: 600;
-}
+.chip-dept { display: inline-block; padding: 2px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; font-size: 11.5px; }
+.chip-post { display: inline-block; padding: 2px 8px; margin: 0 4px 2px 0; background: var(--primary-soft); color: var(--primary); border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.muted { color: var(--text-4); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .badge-success { background: var(--success-soft); color: var(--success); }
 .badge-neutral { background: var(--bg-deep); color: var(--text-3); }
 
-.actions { white-space: nowrap; }
-.link-btn {
-  background: transparent;
-  border: 0;
-  font-size: 12.5px;
-  color: var(--primary);
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-.link-btn:hover { background: var(--primary-soft); }
-.link-btn.warn { color: var(--warning); }
-.link-btn.warn:hover { background: var(--warning-soft); }
+.row-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn:hover { background: var(--bg); }
+.btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-sm.danger, .danger { color: var(--danger); }
+.btn-sm.danger:hover { background: var(--danger-soft); }
+.btn-link { border: 0; background: none; color: var(--primary); font-size: 11.5px; cursor: pointer; text-align: left; padding: 4px 0 0; }
 
-.empty { text-align: center; color: var(--text-4); padding: 30px 0; }
-
-/* Modal */
-.modal-overlay {
-  position: fixed; inset: 0;
-  background: rgba(13,27,46,.42);
-  z-index: 500;
-  display: flex; align-items: center; justify-content: center;
-}
-.modal {
-  background: var(--surface);
-  border-radius: 14px;
-  width: 460px;
-  max-width: 90vw;
-  box-shadow: 0 24px 64px rgba(13,27,46,.28);
-  overflow: hidden;
-}
-.modal-head {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-}
-.modal-head h3 { font-size: 15px; font-weight: 600; }
-.close-btn {
-  background: transparent;
-  border: 0;
-  font-size: 22px;
-  color: var(--text-3);
-  cursor: pointer;
-  padding: 0 6px;
-  border-radius: 4px;
-}
-.close-btn:hover { background: var(--bg); color: var(--text); }
-.modal-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
-.field { display: flex; flex-direction: column; gap: 6px; }
-.label { font-size: 12px; font-weight: 500; color: var(--text-2); }
-.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(13,27,46,.45); display: grid; place-items: center; z-index: 100; backdrop-filter: blur(3px); }
+.modal { background: var(--surface); border-radius: 14px; padding: 22px; width: min(440px, 92vw); box-shadow: var(--sh-4); display: flex; flex-direction: column; gap: 12px; }
+.modal h3 { font-size: 16px; font-weight: 600; margin: 0; }
+.modal-sub { font-size: 12.5px; color: var(--text-3); margin: -6px 0 4px; }
+.check-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.check-list li { padding: 2px 0; }
+.check-list label { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.check-list label:hover { background: var(--surface-2); }
+.check-list input { accent-color: var(--primary); }
+.r-name { font-weight: 500; }
+.r-code { font-family: var(--ff-mono); font-size: 11.5px; color: var(--text-3); padding: 1px 6px; background: var(--surface-2); border-radius: 4px; }
+.tag-builtin { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--purple-soft); color: var(--purple); border-radius: 3px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.label { font-size: 12px; color: var(--text-2); }
+.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); }
 .input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
-.modal-foot {
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
+.form-error { font-size: 12.5px; color: var(--danger); background: var(--danger-soft); padding: 8px 10px; border-radius: 6px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 </style>

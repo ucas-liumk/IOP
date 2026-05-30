@@ -77,6 +77,7 @@ const router = createRouter({
             { path: "registrations", name: "admin.registrations", component: () => import("@/modules/admin/views/RegistrationsView.vue") },
             { path: "roles",         name: "admin.roles",         component: () => import("@/modules/admin/views/RolesView.vue") },
             { path: "departments",   name: "admin.depts",         component: () => import("@/modules/admin/views/DepartmentsView.vue") },
+            { path: "posts",         name: "admin.posts",         component: () => import("@/modules/admin/views/PostsView.vue") },
             { path: "settings",      name: "admin.settings",      component: () => import("@/modules/admin/views/SettingsView.vue") },
             { path: "apps",          name: "admin.apps",          component: () => import("@/modules/admin/views/AppsView.vue") },
             { path: "audit",         name: "admin.audit",         component: () => import("@/modules/admin/views/AuditView.vue") },
