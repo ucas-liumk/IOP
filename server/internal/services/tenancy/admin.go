@@ -112,10 +112,11 @@ func (s *Service) ListMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 	args = append(args, p.PageSize, p.Offset())
 	rows, err := tx.Query(ctx,
 		`SELECT m.id, m.platform_user_id, COALESCE(u.username,''), m.display_name, COALESCE(m.email,''),
-		        COALESCE(m.department,''), m.dept_id, COALESCE(m.title,''), COALESCE(m.phone,''),
+		        COALESCE(d.name, m.department, ''), m.dept_id, COALESCE(m.title,''), COALESCE(m.phone,''),
 		        m.status, to_char(m.joined_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM member m
 		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
+		 LEFT JOIN department d ON d.id = m.dept_id
 		 WHERE 1=1`+where+fmt.Sprintf(`
 		 ORDER BY m.joined_at DESC
 		 LIMIT $%d OFFSET $%d`, fidx, fidx+1), args...)
