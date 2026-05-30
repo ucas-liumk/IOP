@@ -1,7 +1,34 @@
-import { createRouter, createWebHistory } from "vue-router";
+import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 import AppLayout from "@/shell/layout/AppLayout.vue";
 import AdminLayout from "@/modules/admin/AdminLayout.vue";
 import { requireAuth } from "@/shell/auth/guard";
+
+// === Auto-discover business modules ===
+// Each module under @/modules/<code>/ exposes a manifest.ts + routes.ts.
+// Adding a new module = drop a folder; no router edits needed.
+//
+// "admin" module is hand-wired because it uses its own AdminLayout.
+const moduleManifests = import.meta.glob<{ manifest: { code: string; routePrefix: string } }>(
+  "@/modules/*/manifest.ts", { eager: true }
+);
+const moduleRoutes = import.meta.glob<{ routes: RouteRecordRaw[] }>(
+  "@/modules/*/routes.ts", { eager: true }
+);
+
+const businessRoutes: RouteRecordRaw[] = [];
+for (const path in moduleManifests) {
+  const m = moduleManifests[path].manifest;
+  if (m.code === "admin") continue;
+  const folder = path.replace("/manifest.ts", "");
+  const routesEntry = moduleRoutes[`${folder}/routes.ts`];
+  if (!routesEntry) continue;
+  for (const r of routesEntry.routes) {
+    businessRoutes.push({
+      ...r,
+      path: m.routePrefix.replace(/^\//, "") + (r.path ? "/" + r.path : ""),
+    });
+  }
+}
 
 const router = createRouter({
   history: createWebHistory(),
@@ -21,12 +48,11 @@ const router = createRouter({
           name: "workspace",
           component: () => import("@/shell/workspace/WorkspaceHome.vue"),
         },
-        // OKR business module
-        { path: "okr/plans", name: "okr.plans",     component: () => import("@/modules/okr/views/PlansView.vue") },
-        { path: "okr/reports", name: "okr.reports", component: () => import("@/modules/okr/views/ReportsView.vue") },
-        { path: "okr/rollup", name: "okr.rollup",   component: () => import("@/modules/okr/views/RollupView.vue") },
 
-        // Admin module (mounted under AppLayout but uses its own sidebar)
+        // Auto-mounted business module routes
+        ...businessRoutes,
+
+        // Admin module
         {
           path: "admin",
           component: AdminLayout,
@@ -42,7 +68,7 @@ const router = createRouter({
           ],
         },
 
-        // Personal settings (also rendered inside AdminLayout for the unified nav)
+        // Personal settings (uses AdminLayout for unified sidebar)
         {
           path: "me",
           component: AdminLayout,
@@ -54,5 +80,9 @@ const router = createRouter({
     },
   ],
 });
+
+if (import.meta.env.DEV) {
+  console.info("[router] auto-mounted business modules:", businessRoutes.map((r) => r.path));
+}
 
 export default router;

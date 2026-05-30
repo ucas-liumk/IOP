@@ -12,25 +12,23 @@
 
     <div class="rail-sep"></div>
 
-    <router-link to="/okr/plans" class="rail-item installed" :class="{ active: $route.path.startsWith('/okr') }" title="OKR 工作安排">
-      <div class="rail-ico">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>
+    <!-- Installed apps from /me/apps — driven by tenant_app + Module Registry -->
+    <router-link
+      v-for="app in myApps"
+      :key="app.code"
+      :to="appHomeRoute(app.code)"
+      class="rail-item installed"
+      :class="{ active: $route.path.startsWith(appHomeRoute(app.code).split('/').slice(0, 2).join('/')) }"
+      :title="app.name"
+    >
+      <div class="rail-ico" :style="{ background: app.color }">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path :d="app.icon"/>
         </svg>
       </div>
-      <div class="rail-label">OKR</div>
-      <span v-if="planCount > 0" class="rail-badge">{{ planCount > 99 ? '99+' : planCount }}</span>
+      <div class="rail-label">{{ shortName(app.name) }}</div>
+      <span v-if="app.code === 'okr' && planCount > 0" class="rail-badge">{{ planCount > 99 ? '99+' : planCount }}</span>
     </router-link>
-
-    <button class="rail-item beta" title="审批流程（内测中）">
-      <div class="rail-ico">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-        </svg>
-      </div>
-      <div class="rail-label">审批</div>
-      <span class="beta-tag">内测</span>
-    </button>
 
     <router-link
       v-if="admin.is_tenant_admin || admin.is_platform_admin"
@@ -59,7 +57,11 @@
       <div class="rail-label">添加</div>
     </button>
 
-    <AppCenterModal :open="appCenterOpen" @close="appCenterOpen = false" @navigate="goTo" />
+    <AppCenterModal
+      :open="appCenterOpen"
+      @close="appCenterOpen = false; reloadApps()"
+      @navigate="goTo"
+    />
   </aside>
 </template>
 
@@ -68,21 +70,35 @@ import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { listPlans } from "@/modules/okr/api/okr";
 import { getMyAdminFlags, type MeAdmin } from "@/modules/admin/api/admin";
+import { getMyApps, appHomeRoute, type Manifest } from "@/shell/appcenter/appstore";
 import AppCenterModal from "@/shell/appcenter/AppCenterModal.vue";
 
 const router = useRouter();
 const planCount = ref(0);
 const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false });
 const appCenterOpen = ref(false);
+const myApps = ref<Manifest[]>([]);
 
 onMounted(async () => {
+  await reloadApps();
   try { planCount.value = (await listPlans("week")).length; } catch {}
   try { admin.value = await getMyAdminFlags(); } catch {}
 });
 
+async function reloadApps() {
+  try { myApps.value = await getMyApps(); } catch { myApps.value = []; }
+}
+
 function goTo(path: string) {
   appCenterOpen.value = false;
   router.push(path);
+  reloadApps();
+}
+
+function shortName(name: string): string {
+  const m = name.match(/^[A-Za-z0-9]+/);
+  if (m && m[0].length >= 2) return m[0];
+  return name.length > 4 ? name.slice(0, 4) : name;
 }
 </script>
 
@@ -136,13 +152,13 @@ function goTo(path: string) {
   color: var(--primary);
 }
 .rail-item.active .rail-ico {
-  background: var(--primary);
+  background: var(--primary) !important;
   color: #fff;
   box-shadow: 0 4px 10px rgba(30,95,217,.32);
 }
 .rail-item.active .rail-label { font-weight: 600; }
 
-.rail-item.installed .rail-ico { background: var(--cat-collab); color: #fff; }
+.rail-item.installed .rail-ico { color: #fff; }
 .rail-item.installed:hover .rail-ico { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(30,95,217,.25); }
 
 .rail-item.admin-item .rail-ico {
@@ -150,7 +166,7 @@ function goTo(path: string) {
   color: #fff;
 }
 .rail-item.admin-item.active .rail-ico {
-  background: linear-gradient(135deg, var(--primary), #0d1b2e);
+  background: linear-gradient(135deg, var(--primary), #0d1b2e) !important;
   box-shadow: 0 4px 10px rgba(13,27,46,.25);
 }
 
@@ -174,24 +190,6 @@ function goTo(path: string) {
   border-radius: 999px;
   color: #fff; font-size: 10px; font-weight: 700;
   display: grid; place-items: center; line-height: 1;
-}
-
-.rail-item.beta .rail-ico {
-  background: var(--warning-soft);
-  color: var(--warning);
-  border: 1px dashed var(--warning);
-}
-.rail-item.beta .rail-label { color: var(--text-3); }
-.rail-item.beta .beta-tag {
-  position: absolute;
-  top: 4px; right: 6px;
-  font-size: 8.5px;
-  padding: 1px 4px;
-  background: var(--warning);
-  color: #fff;
-  border-radius: 3px;
-  font-weight: 700;
-  letter-spacing: .3px;
 }
 
 .rail-sep { height: 1px; background: var(--border); margin: 6px 8px; }

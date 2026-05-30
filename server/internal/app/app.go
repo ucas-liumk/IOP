@@ -13,11 +13,12 @@ import (
 	loggerinfra "github.com/leo/iop/server/internal/infrastructure/logger"
 	pginfra "github.com/leo/iop/server/internal/infrastructure/pg"
 	redisinfra "github.com/leo/iop/server/internal/infrastructure/redis"
-	okrapp "github.com/leo/iop/server/internal/contexts/okr/application"
-	okrinfra "github.com/leo/iop/server/internal/contexts/okr/infrastructure"
+	"github.com/leo/iop/server/internal/contexts/crm"
+	"github.com/leo/iop/server/internal/contexts/okr"
 	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
 	iface "github.com/leo/iop/server/internal/interface"
 	"github.com/leo/iop/server/internal/interface/middleware"
+	"github.com/leo/iop/server/internal/services/appstore"
 	"github.com/leo/iop/server/internal/services/audit"
 	"github.com/leo/iop/server/internal/services/dictionary"
 	"github.com/leo/iop/server/internal/services/filestorage"
@@ -27,6 +28,7 @@ import (
 	"github.com/leo/iop/server/internal/services/tenancy"
 	"github.com/leo/iop/server/internal/shared/eventbus"
 	"github.com/leo/iop/server/internal/shared/kernel"
+	"github.com/leo/iop/server/internal/shared/module"
 	"github.com/leo/iop/server/internal/shared/tenantdb"
 	"go.uber.org/zap"
 )
@@ -49,7 +51,8 @@ type App struct {
 	Audit       *audit.Service
 	Notif       *notification.Service
 	FileStorage *filestorage.Service
-	OKR         *okrapp.Service
+	Modules     *module.Registry
+	AppStore    *appstore.Service
 }
 
 // Build wires components in dependency order. Returns (*App, cleanup, error).
@@ -165,12 +168,30 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		fsSvc = nil
 	}
 
+	// === Module Registry === — every business module ships a Module impl;
+	// registering it here is the ONLY change needed to add a new app.
+	registry := module.NewRegistry()
+	platformDB := tenantdb.NewPlatformDB(pool)
+	deps := module.Deps{
+		Pool:     pool,
+		Tenant:   tenantDB,
+		Platform: platformDB,
+		Bus:      bus,
+		Logger:   logger,
+		Clock:    clk,
+	}
+	registry.Register(okr.New(deps))
+	registry.Register(crm.New(deps))
+	// registry.Register(approval.New(deps))
+
+	appStore := appstore.NewService(pool, registry, clk)
+
 	a := &App{
 		Cfg:         cfg,
 		Logger:      logger,
 		Pool:        pool,
 		RDB:         rdb,
-		Platform:    tenantdb.NewPlatformDB(pool),
+		Platform:    platformDB,
 		Tenant:      tenantDB,
 		Bus:         bus,
 		Health:      healthReg,
@@ -182,13 +203,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		Audit:       auditSvc,
 		Notif:       notifSvc,
 		FileStorage: fsSvc,
+		Modules:     registry,
+		AppStore:    appStore,
 	}
-
-	// OKR bounded context wiring
-	okrPlans := okrinfra.NewPGPlanRepo(tenantDB)
-	okrReports := okrinfra.NewPGReportRepo(tenantDB)
-	okrRollup := okrinfra.NewPGRollupQuery(tenantDB)
-	a.OKR = okrapp.NewService(okrPlans, okrReports, okrRollup, bus, clk)
 
 	cleanup := func() {
 		_ = auditSvc.Close()
@@ -222,12 +239,34 @@ func (a *App) Engine() *gin.Engine {
 	if a.FileStorage != nil {
 		filestorage.RegisterRoutes(authT, a.FileStorage)
 	}
-	okriface.RegisterRoutes(authT, a.OKR)
+
+	// AppStore catalog (authenticated, tenant-scoped)
+	appstore.RegisterCatalogRoutes(authT, a.AppStore)
+
+	// Module routes — Registry mounts /api/apps/<code>/* for every module.
+	// Each module also gets routes at the legacy /api/* paths via its own RegisterRoutes
+	// for backward compatibility during transition. Modules can choose to wire either or both.
+	deps := module.Deps{
+		Pool:     a.Pool,
+		Tenant:   a.Tenant,
+		Platform: a.Platform,
+		Bus:      a.Bus,
+		Logger:   a.Logger,
+		Clock:    kernel.RealClock{},
+	}
+	a.Modules.MountAll(authT, deps)
+	// Backward-compat: also mount OKR at the flat /api/plans /api/reports /api/rollups paths
+	// so the existing frontend keeps working without recompile.
+	if okrMod, _ := a.Modules.Get("okr").(*okr.Module); okrMod != nil {
+		okriface.RegisterRoutes(authT, okrMod.AppService())
+	}
 
 	// Personal /me routes — auth only (no admin gate)
 	authOnly := api.Group("")
 	authOnly.Use(iam.JWTAuth(a.IAM))
 	iam.RegisterMeRoutes(authOnly, a.IAM)
+	// /me/apps needs tenant context; mount under authT (after TenantLoader)
+	appstore.RegisterMeRoutes(authT, a.AppStore)
 
 	// Admin routes — require tenant_admin OR platform_admin (gate checks role grants)
 	admin := authT.Group("")
@@ -238,6 +277,8 @@ func (a *App) Engine() *gin.Engine {
 		Memory:   a.DictMemory,
 		TenantDB: a.Tenant,
 	}, []string{"plan_level", "report_type"})
+	appstore.RegisterAdminRoutes(admin, a.AppStore)
+	module.RegisterAdminRoutes(admin, a.Modules)
 
 	return r
 }

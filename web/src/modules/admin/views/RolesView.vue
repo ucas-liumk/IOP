@@ -44,9 +44,18 @@
           </span>
         </div>
         <div v-if="!r.built_in" class="add-pol-row">
-          <input class="input input-sm" v-model="newPol[r.id].resource" placeholder="resource (如 okr.plan)" />
-          <input class="input input-sm" v-model="newPol[r.id].action" placeholder="action (如 read 或 *)" />
-          <button class="btn btn-sm" @click="addPol(r.id)">+ 加策略</button>
+          <select class="input input-sm" v-model="newPol[r.id].resource">
+            <option value="">选择资源</option>
+            <option v-for="res in Object.keys(perms.by_resource)" :key="res" :value="res">{{ res }}</option>
+          </select>
+          <select class="input input-sm" v-model="newPol[r.id].action" :disabled="!newPol[r.id].resource">
+            <option value="">选择动作</option>
+            <option v-for="p in (perms.by_resource[newPol[r.id].resource] ?? [])" :key="p.action" :value="p.action">
+              {{ p.action }} · {{ p.label }}
+            </option>
+            <option value="*">★ * (全部)</option>
+          </select>
+          <button class="btn btn-sm" @click="addPol(r.id)" :disabled="!newPol[r.id].resource || !newPol[r.id].action">+ 加策略</button>
         </div>
       </article>
     </div>
@@ -56,14 +65,19 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from "vue";
 import { listRoles, createRole, deleteRole, addPolicy, removePolicy, type Role } from "../api/admin";
+import { getPermissionRegistry, type PermissionRegistry } from "@/shell/appcenter/appstore";
 
 const roles = ref<Role[]>([]);
+const perms = ref<PermissionRegistry>({ permissions: [], by_resource: {} });
 const showCreate = ref(false);
 const saving = ref(false);
 const newRole = reactive({ code: "", name: "" });
 const newPol = reactive<Record<string, { resource: string; action: string }>>({});
 
-onMounted(reload);
+onMounted(async () => {
+  await reload();
+  try { perms.value = await getPermissionRegistry(); } catch {}
+});
 watch(roles, (rs) => rs.forEach((r) => (newPol[r.id] ??= { resource: "", action: "" })));
 
 async function reload() { roles.value = await listRoles(); }

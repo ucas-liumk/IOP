@@ -17,39 +17,57 @@
         </header>
 
         <div class="ac-body">
+          <!-- 我的应用 -->
           <div class="ac-sec-head">
             <span class="t">我的应用</span>
-            <span class="hint">点击启动 · 拖拽可调整顺序 (mock)</span>
+            <span class="hint">{{ myApps.length }} 个已安装 · 点击进入</span>
           </div>
-          <div class="my-apps-strip">
-            <button v-for="a in myApps" :key="a.code" class="my-tile" @click="a.path && $emit('navigate', a.path)">
+          <div v-if="myApps.length > 0" class="my-apps-strip">
+            <button v-for="a in myApps" :key="a.code" class="my-tile" @click="$emit('navigate', appHomeRoute(a.code))">
               <div class="m-ico" :style="{ background: a.color }">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" v-html="a.svg"></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path :d="a.icon"/></svg>
               </div>
               <div class="m-name">{{ a.name }}</div>
             </button>
           </div>
+          <div v-else class="empty-row">尚无安装应用 · 在下方应用市场添加</div>
 
-          <div v-for="(cat, ci) in categories" :key="cat.title" class="cat-block">
+          <!-- 应用市场 -->
+          <div v-for="(apps, cat) in catalogByCategory" :key="cat" class="cat-block">
             <div class="cat-title">
-              <span class="cat-dot" :style="{ background: cat.color }"></span>
-              {{ cat.title }}
+              <span class="cat-dot" :style="{ background: apps[0]?.color || 'var(--text-4)' }"></span>
+              {{ cat }}
+              <span class="cat-count">{{ apps.length }}</span>
             </div>
             <div class="app-grid">
               <button
-                v-for="a in filteredCat(ci)"
+                v-for="a in apps"
                 :key="a.code"
                 class="app-cell"
-                :class="{ 'is-soon': a.status === 'soon' }"
-                @click="install(a)"
+                :class="{ 'is-installed': a.installed }"
+                @click="toggle(a)"
               >
-                <div class="c-ico" :style="{ background: a.status === 'soon' ? '' : cat.color }">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" v-html="a.svg"></svg>
+                <div class="c-ico" :style="{ background: a.color }">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path :d="a.icon"/></svg>
                 </div>
-                <span v-if="installedSet.has(a.code)" class="c-action c-added">✓</span>
-                <span v-else-if="a.status === 'online'" class="c-action c-add">+</span>
-                <span v-if="a.status === 'soon'" class="c-tag soon">敬请期待</span>
-                <span v-else-if="a.status === 'beta'" class="c-tag beta">内测</span>
+                <span v-if="a.installed" class="c-action c-added">✓</span>
+                <span v-else class="c-action c-add">+</span>
+                <div class="c-name">{{ a.name }}</div>
+                <div class="c-version">v{{ a.version }}</div>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="comingSoon.length > 0" class="cat-block">
+            <div class="cat-title">
+              <span class="cat-dot" style="background: var(--text-4);"></span>
+              敬请期待
+              <span class="cat-count">{{ comingSoon.length }}</span>
+            </div>
+            <div class="app-grid">
+              <button v-for="a in comingSoon" :key="a.code" class="app-cell is-soon" disabled>
+                <div class="c-ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7" x2="12" y2="13"/><circle cx="12" cy="17" r=".7" fill="currentColor"/></svg></div>
+                <span class="c-tag soon">敬请期待</span>
                 <div class="c-name">{{ a.name }}</div>
               </button>
             </div>
@@ -61,98 +79,63 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { getCatalog, installApp, uninstallApp, appHomeRoute, type CatalogEntry, type Manifest } from "./appstore";
 
-defineProps<{ open: boolean }>();
-const emit = defineEmits<{ (e: "close"): void; (e: "navigate", path: string): void }>();
-void emit;
+const props = defineProps<{ open: boolean }>();
+defineEmits<{ (e: "close"): void; (e: "navigate", path: string): void }>();
 
 const q = ref("");
+const catalog = ref<CatalogEntry[]>([]);
+const loading = ref(false);
 
-interface App {
-  code: string; name: string; svg: string;
-  status: "online" | "soon" | "beta";
-  path?: string;
-  color?: string;
-}
+// Future-app placeholders to make the marketplace feel populated.
+const comingSoon = ref<Manifest[]>([
+  { code: "approval", name: "审批流程", description: "通用审批引擎", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11", color: "var(--cat-collab)", category: "协同办公", version: "0.9.0", permissions: [], events: [] },
+  { code: "crm", name: "客户管理 CRM", description: "销售线索到合同", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-biz)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
+  { code: "order", name: "订单管理", description: "销售订单全生命周期", icon: "M9 21h9.5l1.5-13H4l1.5 13z", color: "var(--cat-biz)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
+  { code: "finance", name: "财务管理", description: "收支与对账", icon: "M12 1v23M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6", color: "var(--cat-finance)", category: "财务税务", version: "0.5.0", permissions: [], events: [] },
+  { code: "hr", name: "HR 一体化", description: "人事考勤薪酬", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-hr)", category: "人力资源", version: "0.5.0", permissions: [], events: [] },
+  { code: "report", name: "报表中心", description: "跨应用数据看板", icon: "M18 20V10M12 20V4M6 20v-6", color: "var(--cat-data)", category: "数据分析", version: "0.5.0", permissions: [], events: [] },
+]);
 
-const myApps: App[] = [
-  { code: "okr", name: "OKR", color: "var(--cat-collab)", path: "/okr/plans", status: "online",
-    svg: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>' },
-  { code: "admin", name: "管理", color: "var(--text-2)", path: "/admin", status: "online",
-    svg: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33"/>' },
-];
-
-const installedSet = computed(() => new Set(myApps.map((a) => a.code)));
-
-const categories: { title: string; color: string; apps: App[] }[] = [
-  {
-    title: "协同办公", color: "var(--cat-collab)",
-    apps: [
-      { code: "approval", name: "审批流程", status: "beta",
-        svg: '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>' },
-      { code: "doc", name: "文档协作", status: "soon",
-        svg: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>' },
-      { code: "meeting", name: "会议室预订", status: "soon",
-        svg: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>' },
-      { code: "wiki", name: "知识库", status: "soon",
-        svg: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>' },
-    ],
-  },
-  {
-    title: "业务管理", color: "var(--cat-biz)",
-    apps: [
-      { code: "order", name: "订单管理", status: "soon",
-        svg: '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/>' },
-      { code: "inventory", name: "库存管理", status: "soon",
-        svg: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>' },
-      { code: "crm", name: "客户管理 CRM", status: "soon",
-        svg: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' },
-      { code: "contract", name: "智能合同", status: "soon",
-        svg: '<polygon points="14 2 18 6 7 17 3 17 3 13 14 2"/>' },
-    ],
-  },
-  {
-    title: "财务税务", color: "var(--cat-finance)",
-    apps: [
-      { code: "finance", name: "财务管理", status: "soon",
-        svg: '<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>' },
-      { code: "tax", name: "税务申报", status: "soon",
-        svg: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/>' },
-    ],
-  },
-  {
-    title: "人力资源", color: "var(--cat-hr)",
-    apps: [
-      { code: "hr", name: "HR 一体化", status: "soon",
-        svg: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' },
-      { code: "attendance", name: "考勤打卡", status: "soon",
-        svg: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
-    ],
-  },
-  {
-    title: "数据分析", color: "var(--cat-data)",
-    apps: [
-      { code: "report", name: "报表中心", status: "soon",
-        svg: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>' },
-      { code: "bi", name: "BI 看板", status: "soon",
-        svg: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>' },
-    ],
-  },
-];
-
-function filteredCat(idx: number) {
-  const apps = categories[idx].apps;
-  if (!q.value) return apps;
-  return apps.filter((a) => a.name.includes(q.value));
-}
-
-function install(a: App) {
-  if (a.status === "soon") {
-    alert(`${a.name} 敬请期待 · 加入候补名单时会通知你`);
-    return;
+const myApps = computed(() => catalog.value.filter((a) => a.installed));
+const filtered = computed(() => {
+  if (!q.value) return catalog.value;
+  return catalog.value.filter((a) =>
+    a.name.includes(q.value) || a.code.includes(q.value.toLowerCase())
+  );
+});
+const catalogByCategory = computed(() => {
+  const out: Record<string, CatalogEntry[]> = {};
+  for (const a of filtered.value) {
+    (out[a.category] ??= []).push(a);
   }
-  alert(`已添加 "${a.name}" 到我的应用 (mock)`);
+  return out;
+});
+
+onMounted(reload);
+watch(() => props.open, (v) => { if (v) reload(); });
+
+async function reload() {
+  loading.value = true;
+  try { catalog.value = await getCatalog(); }
+  catch { catalog.value = []; }
+  finally { loading.value = false; }
+}
+
+async function toggle(a: CatalogEntry) {
+  try {
+    if (a.installed) {
+      if (!confirm(`从工作台移除 "${a.name}"？`)) return;
+      await uninstallApp(a.code);
+    } else {
+      await installApp(a.code);
+    }
+    await reload();
+  } catch (e: any) {
+    alert(e.response?.data?.error?.message ?? "操作失败");
+  }
 }
 </script>
 
@@ -217,19 +200,12 @@ function install(a: App) {
   color: var(--text-3);
   font-size: 22px;
   cursor: pointer;
-  flex-shrink: 0;
 }
 .ac-close:hover { background: var(--bg); color: var(--text); }
 
-.ac-body {
-  padding: 20px 22px 24px;
-  overflow-y: auto;
-}
+.ac-body { padding: 20px 22px 24px; overflow-y: auto; }
 
-.ac-sec-head {
-  display: flex; align-items: baseline; gap: 10px;
-  margin: 4px 0 12px;
-}
+.ac-sec-head { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 12px; }
 .ac-sec-head .t { font-size: 14px; font-weight: 600; color: var(--text); }
 .ac-sec-head .hint { font-size: 12px; color: var(--text-3); }
 
@@ -243,14 +219,15 @@ function install(a: App) {
   border-radius: 12px;
   margin-bottom: 26px;
 }
+.empty-row { padding: 26px 0; text-align: center; color: var(--text-3); font-size: 13px; }
+
 .my-tile {
   position: relative;
   display: flex; flex-direction: column; align-items: center;
   gap: 7px;
   padding: 10px 4px 8px;
   border-radius: 10px;
-  background: transparent;
-  border: 0;
+  background: transparent; border: 0;
   cursor: pointer;
   transition: background .12s, box-shadow .12s;
 }
@@ -272,22 +249,28 @@ function install(a: App) {
   margin-bottom: 12px;
 }
 .cat-dot { width: 8px; height: 8px; border-radius: 2px; }
-.app-grid {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 6px;
+.cat-count {
+  font-size: 11px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-weight: 600;
 }
+
+.app-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
 .app-cell {
   position: relative;
   display: flex; flex-direction: column; align-items: center;
   gap: 8px;
-  padding: 14px 6px 12px;
+  padding: 14px 6px 10px;
   border-radius: 12px;
   background: transparent; border: 0;
   cursor: pointer;
   transition: background .12s, transform .12s;
 }
-.app-cell:hover { background: var(--surface-2); transform: translateY(-1px); }
+.app-cell:hover:not(:disabled) { background: var(--surface-2); transform: translateY(-1px); }
+.app-cell:disabled { cursor: not-allowed; }
 .app-cell .c-ico {
   width: 46px; height: 46px;
   border-radius: 13px;
@@ -301,6 +284,10 @@ function install(a: App) {
   color: var(--text);
   text-align: center;
   line-height: 1.25;
+}
+.app-cell .c-version {
+  font-size: 10px; color: var(--text-4);
+  font-family: var(--ff-mono);
 }
 .app-cell.is-soon .c-name { color: var(--text-3); }
 .app-cell .c-action {
@@ -329,5 +316,4 @@ function install(a: App) {
   border-radius: 3px;
 }
 .app-cell .c-tag.soon { background: var(--bg-deep); color: var(--text-3); }
-.app-cell .c-tag.beta { background: var(--warning); color: #fff; }
 </style>
