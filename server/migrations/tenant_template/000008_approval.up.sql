@@ -50,3 +50,9 @@ CREATE TABLE IF NOT EXISTS approval_task (
 );
 CREATE INDEX IF NOT EXISTS approval_task_assignee_idx ON approval_task(assignee_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS approval_task_instance_idx ON approval_task(instance_id, node_index);
+
+-- Self-heal: tenants provisioned from an earlier version of this migration may
+-- predate the `flow` snapshot column. CREATE TABLE IF NOT EXISTS is a no-op on an
+-- existing table and won't add it, so add it idempotently here. SyncAllSchemas
+-- re-runs this file on every boot, bringing drifted tenants up to date.
+ALTER TABLE approval_instance ADD COLUMN IF NOT EXISTS flow JSONB NOT NULL DEFAULT '[]'::jsonb;
