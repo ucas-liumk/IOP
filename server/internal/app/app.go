@@ -362,6 +362,14 @@ func (a *App) Engine() *gin.Engine {
 	// PlatformAuthz(resource:action).
 	iam.RegisterPlatformExtrasRoutes(platform, a.IAM, a.Audit, a.Pool, &monitorProbe{health: a.Health, rdb: a.RDB})
 	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
+	// Platform-side org governance: manage ANY organization's department tree by
+	// passing the org's tenant id (/platform/orgs/:tid/depts*). Reuses the tenant
+	// console's dept service funcs; gated per-route with the platform RBAC policy
+	// (org:read / org:write). authz is injected so tenancy stays free of iam.
+	platformAuthz := func(resource, action string) gin.HandlerFunc {
+		return iam.PlatformAuthz(a.IAM, a.Audit, resource, action)
+	}
+	tenancy.RegisterPlatformOrgRoutes(platform, a.Tenancy, a.Pool, platformAuthz)
 	// Complete platform-console menu catalog (unfiltered) for the role editor.
 	a.RegisterPlatformMenuCatalogRoute(platform)
 
