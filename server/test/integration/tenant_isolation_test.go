@@ -187,7 +187,7 @@ func TestKeystone_SuspendedTenantBlocks(t *testing.T) {
 	mid := uid // we have no real member; use uid as proxy
 
 	// First create user → login to get a session
-	tok, _, err := a.IAM.Login(ctx, iam.LoginCmd{Email: email, Password: "Test1234abc!"})
+	tok, _, err := a.IAM.Login(ctx, iam.LoginCmd{Login: email, Password: "Test1234abc!"})
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}

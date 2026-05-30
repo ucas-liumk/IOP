@@ -98,7 +98,15 @@ function gradientFor(name: string) {
   const [a,b] = palette[seed % palette.length];
   return `linear-gradient(135deg, ${a}, ${b})`;
 }
-async function switchTo(id: string) { tenantOpen.value = false; await auth.switchTenant(id); }
+async function switchTo(id: string) {
+  tenantOpen.value = false;
+  await auth.switchTenant(id);
+  // If we're inside the tenant console but lost tenant_admin in the new tenant,
+  // leave it (the /admin beforeEnter guard doesn't re-run on an in-place switch).
+  if (router.currentRoute.value.path.startsWith("/admin") && !auth.isTenantAdmin) {
+    router.push("/");
+  }
+}
 async function logout() {
   await auth.logout();
   router.push("/login");

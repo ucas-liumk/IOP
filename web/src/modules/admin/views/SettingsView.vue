@@ -89,6 +89,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { getTenant, updateTenantName, type TenantInfo } from "../api/admin";
+import { useNotification } from "@/shell/notify";
+
+const notify = useNotification();
 
 const info = ref<TenantInfo | null>(null);
 const form = reactive({ name: "" });
@@ -114,7 +117,7 @@ async function save() {
     saved.value = true;
     setTimeout(() => (saved.value = false), 2200);
   } catch (e: any) {
-    alert(e.response?.data?.error?.message ?? "保存失败");
+    notify.error(e.response?.data?.error?.message ?? "保存失败");
   } finally { saving.value = false; }
 }
 </script>

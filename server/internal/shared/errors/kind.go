@@ -4,17 +4,17 @@ package errors
 type Kind int
 
 const (
-	KindUnknown    Kind = iota
-	KindBusiness        // 400 — business rule violation, safe to show user
-	KindParam           // 400 — invalid request parameter
-	KindAuth            // 401 — unauthenticated
-	KindForbidden       // 403 — authenticated but not authorized
-	KindNotFound        // 404 — resource missing or hidden by tenant scope
-	KindConflict        // 409 — idempotency / version conflict
-	KindRateLimit       // 429 — rate limited
-	KindDatabase        // 500 — DB / persistence failure
-	KindExternal        // 502 — external service failure
-	KindInternal        // 500 — programming error / panic recovered
+	KindUnknown   Kind = iota
+	KindBusiness       // 400 — business rule violation, safe to show user
+	KindParam          // 400 — invalid request parameter
+	KindAuth           // 401 — unauthenticated
+	KindForbidden      // 403 — authenticated but not authorized
+	KindNotFound       // 404 — resource missing or hidden by tenant scope
+	KindConflict       // 409 — idempotency / version conflict
+	KindRateLimit      // 429 — rate limited
+	KindDatabase       // 500 — DB / persistence failure
+	KindExternal       // 502 — external service failure
+	KindInternal       // 500 — programming error / panic recovered
 )
 
 func (k Kind) String() string {

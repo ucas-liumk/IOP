@@ -61,6 +61,11 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { useAuthStore } from "@/shell/auth/auth.store";
 import { changePassword, listSessions, revokeSession, type Session } from "../api/admin";
+import { useNotification } from "@/shell/notify";
+import { useConfirm } from "@/shell/confirm";
+
+const notify = useNotification();
+const { confirm } = useConfirm();
 
 const auth = useAuthStore();
 const pw = reactive({ old: "", new: "", confirm: "" });
@@ -86,12 +91,12 @@ async function changePw() {
     pw.old = ""; pw.new = ""; pw.confirm = "";
     pwSaved.value = true;
     setTimeout(() => (pwSaved.value = false), 2400);
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "改密码失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "改密码失败"); }
   finally { pwSaving.value = false; }
 }
 
 async function revoke(id: string) {
-  if (!confirm("确定注销该会话？")) return;
+  if (!(await confirm({ title: "确认", message: "确定注销该会话？", danger: true }))) return;
   await revokeSession(id);
   await reload();
 }

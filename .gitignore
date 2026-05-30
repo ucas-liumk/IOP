@@ -13,7 +13,16 @@ coverage.out
 # Env / secrets
 .env
 .env.local
+deployments/.env
 server/configs/local.yaml
+
+# Claude Code personal (machine-local) settings — share via CLAUDE.md instead
+.claude/settings.local.json
+
+# Legacy v1 prototype (kept locally, not part of the framework)
+/legacy/
+# stray root asset (the real one lives in web/public/)
+/login-bg.png
 
 # OS
 .DS_Store

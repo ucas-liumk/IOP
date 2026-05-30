@@ -71,6 +71,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { listDictTypes, getDictType, setDictOverride, clearDictOverride, type DictTypeItems } from "../api/admin";
+import { useNotification } from "@/shell/notify";
+
+const notify = useNotification();
 
 const types = ref<string[]>([]);
 const active = ref("plan_level");
@@ -99,11 +102,11 @@ async function load() {
 
 async function save(code: string) {
   const e = editing[code];
-  if (!e.name) { alert("覆盖名称必填（或留空再点恢复默认）"); return; }
+  if (!e.name) { notify.warning("覆盖名称必填（或留空再点恢复默认）"); return; }
   try {
     await setDictOverride(active.value, code, { name: e.name, sort_order: e.sort_order, active: e.active });
     await load();
-  } catch (err: any) { alert(err.response?.data?.error?.message ?? "保存失败"); }
+  } catch (err: any) { notify.error(err.response?.data?.error?.message ?? "保存失败"); }
 }
 
 async function clear(code: string) {

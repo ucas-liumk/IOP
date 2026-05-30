@@ -1,7 +1,7 @@
 <template>
-  <section class="home">
-    <!-- Welcome strip — real greeting, no fake stats -->
-    <div class="welcome">
+  <section class="home" :class="{ 'is-config': configMode }">
+    <!-- Welcome strip -->
+    <div class="welcome" :class="{ 'is-config': configMode }">
       <div class="welcome-left">
         <h1>
           {{ greetingPrefix }}，{{ greetingName }}
@@ -13,11 +13,18 @@
       </div>
       <div class="welcome-right">
         <span class="env-tag">{{ env }}</span>
+        <button class="config-btn" :class="{ active: configMode }" @click="configMode = !configMode">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+          </svg>
+          {{ configMode ? '完成配置' : '配置工作台' }}
+        </button>
       </div>
     </div>
 
-    <!-- Installed apps — driven by /me/apps -->
-    <article class="card">
+    <!-- Installed apps -->
+    <article class="card" :class="{ 'is-config': configMode }">
       <header class="card-header">
         <span class="card-title">
           我的应用
@@ -50,8 +57,16 @@
       </div>
     </article>
 
-    <!-- Platform info — keep minimal, real data -->
-    <article class="card">
+    <!-- User-configured widgets, rendered in pref order -->
+    <component
+      :is="WIDGET_COMPONENTS[code]"
+      v-for="code in visibleWidgets"
+      :key="code"
+      :config-mode="configMode"
+    />
+
+    <!-- Platform info -->
+    <article class="card" :class="{ 'is-config': configMode }">
       <header class="card-header">
         <span class="card-title">平台</span>
       </header>
@@ -62,7 +77,7 @@
         </div>
         <div class="info-item">
           <div class="info-label">账号</div>
-          <div class="info-value">{{ auth.user?.email }}</div>
+          <div class="info-value">{{ auth.user?.username || auth.user?.phone || auth.user?.email || '—' }}</div>
         </div>
         <div class="info-item">
           <div class="info-label">角色</div>
@@ -78,6 +93,8 @@
         </div>
       </div>
     </article>
+
+    <WidgetGallery :open="configMode" @close="configMode = false" />
   </section>
 </template>
 
@@ -86,11 +103,33 @@ import { computed, onMounted, ref } from "vue";
 import { useAuthStore } from "@/shell/auth/auth.store";
 import { getMyApps, appHomeRoute, type Manifest } from "@/shell/appcenter/appstore";
 import { getMyAdminFlags, type MeAdmin } from "@/modules/admin/api/admin";
+import { useWidgetPrefs } from "./widgets/prefs";
+import { type WidgetCode } from "./widgets/types";
+import WidgetGallery from "./widgets/WidgetGallery.vue";
+import WidgetNotifications from "./widgets/WidgetNotifications.vue";
+import WidgetTodos from "./widgets/WidgetTodos.vue";
+import WidgetAgenda from "./widgets/WidgetAgenda.vue";
+import WidgetRecent from "./widgets/WidgetRecent.vue";
+import WidgetAnnouncement from "./widgets/WidgetAnnouncement.vue";
 
 const auth = useAuthStore();
+const configMode = ref(false);
+
+const { prefs } = useWidgetPrefs();
+const visibleWidgets = computed(() => prefs.value.visible);
+
+const WIDGET_COMPONENTS: Record<WidgetCode, unknown> = {
+  notifications: WidgetNotifications,
+  todos: WidgetTodos,
+  agenda: WidgetAgenda,
+  recent: WidgetRecent,
+  announcement: WidgetAnnouncement,
+};
 
 const now = new Date();
-const greetingName = computed(() => auth.user?.email?.split("@")[0] ?? "同学");
+const greetingName = computed(() =>
+  auth.user?.username || auth.user?.email?.split("@")[0] || "同学"
+);
 const greetingPrefix = computed(() => {
   const h = now.getHours();
   if (h < 6) return "凌晨好"; if (h < 12) return "上午好"; if (h < 14) return "中午好";
@@ -116,7 +155,6 @@ onMounted(async () => {
 });
 
 function openAppCenter() {
-  // The AppCenter modal lives in LeftRail; simulate the click.
   const btn = document.querySelector(".rail-add") as HTMLButtonElement | null;
   btn?.click();
 }
@@ -143,7 +181,11 @@ function openAppCenter() {
   border: 1px solid rgba(255,255,255,.6);
   position: relative;
   overflow: hidden;
+  transition: outline 0.18s;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
 }
+.welcome.is-config { outline-color: var(--primary); }
 .welcome::before {
   content: "";
   position: absolute; top: -50%; right: -8%;
@@ -176,7 +218,10 @@ function openAppCenter() {
   font-size: 13px;
   color: var(--text-2);
 }
-.welcome-right { position: relative; z-index: 1; }
+.welcome-right {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 10px;
+}
 .env-tag {
   display: inline-block;
   padding: 4px 10px;
@@ -190,6 +235,28 @@ function openAppCenter() {
   color: var(--primary);
   font-family: var(--ff-mono);
 }
+.config-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px;
+  background: rgba(255,255,255,.85);
+  border: 1px solid rgba(255,255,255,.95);
+  border-radius: 8px;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.config-btn:hover {
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(13,27,46,.10);
+  transform: translateY(-1px);
+}
+.config-btn.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
 
 /* Card */
 .card {
@@ -198,7 +265,11 @@ function openAppCenter() {
   border-radius: 14px;
   box-shadow: var(--sh-1);
   overflow: hidden;
+  transition: outline 0.18s;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
 }
+.card.is-config { outline-color: var(--primary); }
 .card-header {
   display: flex;
   justify-content: space-between;

@@ -10,13 +10,30 @@ import (
 	"github.com/leo/iop/server/internal/services/iam"
 	"github.com/leo/iop/server/internal/shared/errors"
 	"github.com/leo/iop/server/internal/shared/kernel"
+	"github.com/leo/iop/server/internal/shared/module"
 )
 
 // RegisterRoutes wires OKR REST routes. Caller is expected to mount under
-// authenticated + tenant-loaded group.
-func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
+// authenticated + tenant-loaded group. authz gates each route by the module's
+// declared RBAC permissions (resource×action from the Manifest); when nil
+// (e.g. in unit tests) routes are mounted ungated.
+func RegisterRoutes(r *gin.RouterGroup, svc *application.Service, authz module.AuthzFunc) {
+	// gate returns the RBAC middleware for (resource, action), or a no-op when
+	// authz is not wired (tests). Used as a per-route guard.
+	gate := func(resource, action string) gin.HandlerFunc {
+		if authz == nil {
+			return func(c *gin.Context) { c.Next() }
+		}
+		return authz(resource, action)
+	}
+	const (
+		planRes   = "okr.plan"
+		reportRes = "okr.report"
+		rollupRes = "okr.rollup"
+	)
+
 	// Plans -----------------------------------------------------------------
-	r.GET("/plans", func(c *gin.Context) {
+	r.GET("/plans", gate(planRes, "read"), func(c *gin.Context) {
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
@@ -29,7 +46,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.OK(c, gin.H{"plans": plans})
 	})
 
-	r.POST("/plans", func(c *gin.Context) {
+	r.POST("/plans", gate(planRes, "write"), func(c *gin.Context) {
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		var req struct {
 			Level    string  `json:"level" binding:"required"`
@@ -70,7 +87,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.Created(c, p)
 	})
 
-	r.GET("/plans/:id", func(c *gin.Context) {
+	r.GET("/plans/:id", gate(planRes, "read"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, err)
@@ -88,7 +105,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.OK(c, p)
 	})
 
-	r.POST("/plans/:id/items", func(c *gin.Context) {
+	r.POST("/plans/:id/items", gate(planRes, "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		var req struct {
 			Title  string `json:"title" binding:"required"`
@@ -108,10 +125,12 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.Created(c, it)
 	})
 
-	r.PATCH("/plans/:id/items/:itemId/complete", func(c *gin.Context) {
+	r.PATCH("/plans/:id/items/:itemId/complete", gate(planRes, "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		itemID, _ := kernel.ParseID(c.Param("itemId"))
-		var req struct{ Note string `json:"note"` }
+		var req struct {
+			Note string `json:"note"`
+		}
 		_ = c.ShouldBindJSON(&req)
 		if err := svc.CompleteItem(c.Request.Context(), application.CompleteItemCmd{
 			PlanID: id, ItemID: itemID, Note: req.Note,
@@ -122,7 +141,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/plans/:id/close", func(c *gin.Context) {
+	r.POST("/plans/:id/close", gate(planRes, "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.ClosePlan(c.Request.Context(), id); err != nil {
 			apiresp.Fail(c, err)
@@ -132,11 +151,11 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 	})
 
 	// Reports ---------------------------------------------------------------
-	r.POST("/reports/daily", func(c *gin.Context) {
+	r.POST("/reports/daily", gate(reportRes, "write"), func(c *gin.Context) {
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		var req struct {
-			Day     string                `json:"day" binding:"required"` // yyyy-mm-dd
-			Summary string                `json:"summary"`
+			Day     string                   `json:"day" binding:"required"` // yyyy-mm-dd
+			Summary string                   `json:"summary"`
 			Entries []application.EntryInput `json:"entries"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -154,11 +173,11 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.Created(c, r2)
 	})
 
-	r.POST("/reports/weekly", func(c *gin.Context) {
+	r.POST("/reports/weekly", gate(reportRes, "write"), func(c *gin.Context) {
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		var req struct {
-			WeekContains string                `json:"week_contains" binding:"required"`
-			Summary      string                `json:"summary"`
+			WeekContains string                   `json:"week_contains" binding:"required"`
+			Summary      string                   `json:"summary"`
 			Entries      []application.EntryInput `json:"entries"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -177,7 +196,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.Created(c, r2)
 	})
 
-	r.GET("/reports", func(c *gin.Context) {
+	r.GET("/reports", gate(reportRes, "read"), func(c *gin.Context) {
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
@@ -190,7 +209,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.OK(c, gin.H{"reports": rs})
 	})
 
-	r.GET("/reports/:id", func(c *gin.Context) {
+	r.GET("/reports/:id", gate(reportRes, "read"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		r2, err := svc.GetReport(c.Request.Context(), id)
 		if err != nil {
@@ -205,10 +224,12 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 		apiresp.OK(c, gin.H{"report": r2, "comments": comments})
 	})
 
-	r.POST("/reports/:id/comments", func(c *gin.Context) {
+	r.POST("/reports/:id/comments", gate(reportRes, "write"), func(c *gin.Context) {
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		id, _ := kernel.ParseID(c.Param("id"))
-		var req struct{ Body string `json:"body" binding:"required"` }
+		var req struct {
+			Body string `json:"body" binding:"required"`
+		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "okr.invalid_request", "请求格式错误", err))
 			return
@@ -221,7 +242,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *application.Service) {
 	})
 
 	// Rollup ----------------------------------------------------------------
-	r.GET("/rollups/weekly", func(c *gin.Context) {
+	r.GET("/rollups/weekly", gate(rollupRes, "read"), func(c *gin.Context) {
 		week := c.Query("week")
 		var when time.Time
 		if week == "" {

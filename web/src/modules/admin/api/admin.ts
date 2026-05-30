@@ -135,3 +135,74 @@ export async function listSessions(): Promise<Session[]> {
 export async function revokeSession(id: string) {
   await client.post(`/me/sessions/${id}/revoke`);
 }
+
+// Platform users (cross-tenant) — platform_admin only
+export interface PlatformUser {
+  id: string;
+  username?: string;
+  phone?: string;
+  email?: string;
+  status: string;
+  last_login_at?: string;
+  created_at: string;
+}
+export async function listPlatformUsers(search = ""): Promise<PlatformUser[]> {
+  const r = await client.get("/platform/users", { params: search ? { search } : {} });
+  return r.data?.data?.users ?? [];
+}
+export async function createPlatformUser(payload: {
+  username: string; real_name: string; phone?: string; password: string;
+  organization_id: string; role: "tenant_member" | "tenant_admin";
+}): Promise<PlatformUser> {
+  const r = await client.post("/platform/users", payload);
+  return r.data?.data;
+}
+export async function disablePlatformUser(id: string) {
+  await client.post(`/platform/users/${id}/disable`);
+}
+export async function enablePlatformUser(id: string) {
+  await client.post(`/platform/users/${id}/enable`);
+}
+export async function resetPlatformUserPassword(id: string, newPassword: string) {
+  await client.post(`/platform/users/${id}/reset-password`, { new_password: newPassword });
+}
+
+// Platform overview stats (platform admin)
+export interface PlatformStats { organizations: number; users: number; pending_registrations: number }
+export async function getPlatformStats(): Promise<PlatformStats> {
+  const r = await client.get("/platform/stats");
+  return r.data?.data ?? { organizations: 0, users: 0, pending_registrations: 0 };
+}
+
+// Registration applications
+export interface RegistrationApplication {
+  id: string;
+  username: string;
+  real_name: string;
+  organization: string;
+  phone?: string;
+  status: "pending" | "approved" | "rejected";
+  applied_at: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+  reject_reason?: string;
+  target_tenant_id?: string;
+  granted_role?: string;
+}
+// Registration review is available in two scopes:
+//   - "platform" → /platform/registrations (ALL tenants; platform admin)
+//   - "tenant"   → /admin/registrations    (own tenant only; tenant admin)
+export type RegScope = "platform" | "tenant";
+function regBase(scope: RegScope): string {
+  return scope === "platform" ? "/platform/registrations" : "/admin/registrations";
+}
+export async function listRegistrations(scope: RegScope, status: "pending" | "approved" | "rejected" | "all" = "pending"): Promise<RegistrationApplication[]> {
+  const r = await client.get(regBase(scope), { params: { status } });
+  return r.data?.data?.applications ?? [];
+}
+export async function approveRegistration(scope: RegScope, id: string, role: "tenant_member" | "tenant_admin") {
+  await client.post(`${regBase(scope)}/${id}/approve`, { role });
+}
+export async function rejectRegistration(scope: RegScope, id: string, reason: string) {
+  await client.post(`${regBase(scope)}/${id}/reject`, { reason });
+}

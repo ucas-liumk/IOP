@@ -16,9 +16,9 @@ import (
 
 // Installation is one (tenant, app) record from public.tenant_app.
 type Installation struct {
-	TenantID    kernel.ID `json:"tenant_id"`
-	AppCode     string    `json:"app_code"`
-	InstalledAt time.Time `json:"installed_at"`
+	TenantID    kernel.ID  `json:"tenant_id"`
+	AppCode     string     `json:"app_code"`
+	InstalledAt time.Time  `json:"installed_at"`
 	InstalledBy *kernel.ID `json:"installed_by,omitempty"`
 }
 
@@ -73,7 +73,8 @@ func (s *Service) MyApps(ctx context.Context, tenantID kernel.ID) ([]module.Mani
 
 // Install adds an enablement row. No-op if already present.
 func (s *Service) Install(ctx context.Context, tenantID kernel.ID, appCode string, installedBy kernel.ID) error {
-	if s.registry.Get(appCode) == nil {
+	mod := s.registry.Get(appCode)
+	if mod == nil {
 		return errors.New(errors.KindNotFound, "appstore.unknown_app",
 			"应用未在本平台注册: "+appCode)
 	}
@@ -85,11 +86,27 @@ func (s *Service) Install(ctx context.Context, tenantID kernel.ID, appCode strin
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "appstore.install_failed", "安装失败", err)
 	}
+	// Run the module's optional install hook; roll back the enablement on failure
+	// so install is all-or-nothing.
+	if hook, ok := mod.(module.InstallHook); ok {
+		if err := hook.OnInstall(ctx, tenantID); err != nil {
+			_, _ = s.pool.Exec(ctx,
+				`DELETE FROM public.tenant_app WHERE tenant_id = $1 AND app_code = $2`,
+				tenantID, appCode)
+			return errors.Wrap(errors.KindInternal, "appstore.install_hook_failed", "应用初始化失败", err)
+		}
+	}
 	return nil
 }
 
-// Uninstall removes an enablement row. No-op if absent.
+// Uninstall removes an enablement row. No-op if absent. Runs the module's
+// optional uninstall hook first (best-effort cleanup).
 func (s *Service) Uninstall(ctx context.Context, tenantID kernel.ID, appCode string) error {
+	if mod := s.registry.Get(appCode); mod != nil {
+		if hook, ok := mod.(module.UninstallHook); ok {
+			_ = hook.OnUninstall(ctx, tenantID)
+		}
+	}
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM public.tenant_app WHERE tenant_id = $1 AND app_code = $2`,
 		tenantID, appCode)

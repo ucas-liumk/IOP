@@ -2,15 +2,115 @@ package iam
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/leo/iop/server/internal/interface/apiresp"
 	"github.com/leo/iop/server/internal/shared/errors"
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
-// RegisterAdminRoutes mounts /admin/roles + /me/* personal endpoints.
-// Roles routes are admin-gated by caller. /me/* require only JWTAuth.
-func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service) {
+// RegisterAdminRoutes mounts /admin/roles + registration-applications endpoints.
+// Caller is expected to admin-gate this group via TenantAdminRequired.
+func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
+	// Registration applications.
+	// Tenant admins see only applications targeting their tenant; platform admins see all.
+	r.GET("/admin/registrations", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		status := c.DefaultQuery("status", AppStatusPending)
+		if status == "all" {
+			status = ""
+		}
+		var filter *kernel.ID
+		if !svc.IsPlatformAdminUser(c.Request.Context(), claims.PlatformUserID) {
+			tid := claims.TenantID
+			filter = &tid
+		}
+		apps, err := svc.ListApplications(c.Request.Context(), status, filter)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"applications": apps, "count": len(apps)})
+	})
+
+	r.POST("/admin/registrations/:id/approve", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		appID, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "申请 ID 无效", err))
+			return
+		}
+		var req struct {
+			Role string `json:"role"` // tenant_member (default) or tenant_admin
+		}
+		// Body is optional (role defaults in the service); ignore bind errors.
+		_ = c.ShouldBindJSON(&req)
+		// Tenant admins can only approve applications targeting THEIR tenant.
+		// Platform admins may approve any.
+		app, err := svc.GetApplication(c.Request.Context(), appID)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if app == nil {
+			apiresp.Fail(c, errors.New(errors.KindNotFound, "iam.application_not_found", "申请不存在"))
+			return
+		}
+		if !svc.IsPlatformAdminUser(c.Request.Context(), claims.PlatformUserID) {
+			if app.TargetTenantID == nil || *app.TargetTenantID != claims.TenantID {
+				apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.cross_tenant_approval_forbidden",
+					"租户管理员只能审批进入本租户的申请"))
+				return
+			}
+		}
+		u, err := svc.ApproveApplication(c.Request.Context(), pool, ApproveApplicationCmd{
+			ApplicationID: appID,
+			ReviewerID:    claims.PlatformUserID,
+			Role:          req.Role,
+		})
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"user": u})
+	})
+
+	r.POST("/admin/registrations/:id/reject", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		appID, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "申请 ID 无效", err))
+			return
+		}
+		var req struct {
+			Reason string `json:"reason"`
+		}
+		_ = c.ShouldBindJSON(&req)
+		// Same cross-tenant guard as approve: a tenant_admin may only act on
+		// applications targeting their own tenant; platform admins may act on any.
+		app, err := svc.GetApplication(c.Request.Context(), appID)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if app == nil {
+			apiresp.Fail(c, errors.New(errors.KindNotFound, "iam.application_not_found", "申请不存在"))
+			return
+		}
+		if !svc.IsPlatformAdminUser(c.Request.Context(), claims.PlatformUserID) {
+			if app.TargetTenantID == nil || *app.TargetTenantID != claims.TenantID {
+				apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.cross_tenant_reject_forbidden",
+					"租户管理员只能处理进入本租户的申请"))
+				return
+			}
+		}
+		if err := svc.RejectApplication(c.Request.Context(), appID, claims.PlatformUserID, req.Reason); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
 	// Roles (admin)
 	r.GET("/admin/roles", func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
@@ -112,6 +212,165 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service) {
 	})
 }
 
+// RegisterPlatformAdminRoutes mounts the platform console API under /platform/*
+// (platform admin only — caller gates with PlatformAdminRequired; this group has
+// NO tenant context). Covers cross-tenant user management, registration review,
+// and platform stats.
+func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
+	// --- Platform overview stats ---
+	r.GET("/platform/stats", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		var orgs, users, pending int
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM public.tenant WHERE status='active'`).Scan(&orgs)
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM public.platform_user`).Scan(&users)
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM public.registration_application WHERE status='pending'`).Scan(&pending)
+		apiresp.OK(c, gin.H{"organizations": orgs, "users": users, "pending_registrations": pending})
+	})
+
+	// --- Cross-tenant registration review (platform admin sees ALL) ---
+	r.GET("/platform/registrations", func(c *gin.Context) {
+		status := c.DefaultQuery("status", AppStatusPending)
+		if status == "all" {
+			status = ""
+		}
+		apps, err := svc.ListApplications(c.Request.Context(), status, nil) // nil filter = all tenants
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"applications": apps, "count": len(apps)})
+	})
+	r.POST("/platform/registrations/:id/approve", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		appID, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "申请 ID 无效", err))
+			return
+		}
+		var req struct {
+			Role string `json:"role"`
+		}
+		_ = c.ShouldBindJSON(&req)
+		u, err := svc.ApproveApplication(c.Request.Context(), pool, ApproveApplicationCmd{
+			ApplicationID: appID, ReviewerID: claims.PlatformUserID, Role: req.Role,
+		})
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"user": u})
+	})
+	r.POST("/platform/registrations/:id/reject", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		appID, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "申请 ID 无效", err))
+			return
+		}
+		var req struct {
+			Reason string `json:"reason"`
+		}
+		_ = c.ShouldBindJSON(&req)
+		if err := svc.RejectApplication(c.Request.Context(), appID, claims.PlatformUserID, req.Reason); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	// --- Cross-tenant platform users ---
+	r.GET("/platform/users", func(c *gin.Context) {
+		users, err := svc.ListUsers(c.Request.Context(), c.Query("search"), 200)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"users": users})
+	})
+
+	r.POST("/platform/users", func(c *gin.Context) {
+		var req struct {
+			Username       string `json:"username" binding:"required"`
+			RealName       string `json:"real_name" binding:"required"`
+			Phone          string `json:"phone"`
+			Password       string `json:"password" binding:"required"`
+			OrganizationID string `json:"organization_id" binding:"required"`
+			Role           string `json:"role"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		oid, err := kernel.ParseID(req.OrganizationID)
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_organization_id", "organization_id 无效", err))
+			return
+		}
+		u, err := svc.AdminCreateUser(c.Request.Context(), pool, CreateUserByAdminCmd{
+			Username: req.Username, RealName: req.RealName,
+			Phone: req.Phone, Password: req.Password,
+			OrganizationID: oid, Role: req.Role,
+		})
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.Created(c, u)
+	})
+
+	r.GET("/platform/users/:id", func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		u, err := svc.GetUser(c.Request.Context(), id)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if u == nil {
+			apiresp.Fail(c, errors.New(errors.KindNotFound, "iam.user_not_found", "用户不存在"))
+			return
+		}
+		apiresp.OK(c, u)
+	})
+
+	r.POST("/platform/users/:id/disable", func(c *gin.Context) {
+		id, _ := kernel.ParseID(c.Param("id"))
+		if err := svc.SetUserStatus(c.Request.Context(), id, "disabled"); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/users/:id/enable", func(c *gin.Context) {
+		id, _ := kernel.ParseID(c.Param("id"))
+		if err := svc.SetUserStatus(c.Request.Context(), id, "active"); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/users/:id/reset-password", func(c *gin.Context) {
+		id, _ := kernel.ParseID(c.Param("id"))
+		var req struct {
+			NewPassword string `json:"new_password" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.AdminResetPassword(c.Request.Context(), id, req.NewPassword); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+}
+
 // RegisterMeRoutes mounts personal endpoints under /me/*. Requires only JWTAuth.
 func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
 	r.POST("/me/password", func(c *gin.Context) {
@@ -153,10 +412,11 @@ func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		tid := claims.TenantID
 		isTA := svc.IsTenantAdmin(c.Request.Context(), claims.MemberID, tid)
-		isPA := svc.IsPlatformAdmin(c.Request.Context(), claims.MemberID, tid)
+		isPA := svc.IsPlatformAdminUser(c.Request.Context(), claims.PlatformUserID)
 		apiresp.OK(c, gin.H{
 			"is_tenant_admin":   isTA,
 			"is_platform_admin": isPA,
+			"has_tenant":        claims.TenantID != "",
 		})
 	})
 }
@@ -177,15 +437,18 @@ func TenantAdminRequired(svc *Service) gin.HandlerFunc {
 	}
 }
 
-// PlatformAdminRequired middleware ensures member has platform_admin role.
+// PlatformAdminRequired gates the platform console. It checks the GLOBAL
+// is_platform_admin flag on the authenticated platform_user and does NOT require
+// any tenant context — platform admins govern across all tenants and need not be
+// a member of any tenant.
 func PlatformAdminRequired(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := ClaimsFromContext(c.Request.Context())
-		if !ok || claims.MemberID == "" || claims.TenantID == "" {
+		if !ok || claims.PlatformUserID == "" {
 			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.platform_admin_required", "请使用平台管理员账号"))
 			return
 		}
-		if !svc.IsPlatformAdmin(c.Request.Context(), claims.MemberID, claims.TenantID) {
+		if !svc.IsPlatformAdminUser(c.Request.Context(), claims.PlatformUserID) {
 			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.platform_admin_required", "需要平台管理员权限"))
 			return
 		}

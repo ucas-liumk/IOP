@@ -1,7 +1,11 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 import AppLayout from "@/shell/layout/AppLayout.vue";
 import AdminLayout from "@/modules/admin/AdminLayout.vue";
-import { requireAuth } from "@/shell/auth/guard";
+import PlatformLayout from "@/modules/platform/PlatformLayout.vue";
+import MeLayout from "@/modules/me/MeLayout.vue";
+import { requireAuth, requirePlatformAdmin, requireTenantAdmin } from "@/shell/auth/guard";
+import { useAuthStore } from "@/shell/auth/auth.store";
+import { bumpRecent } from "@/shell/workspace/widgets/recentApps";
 
 // === Auto-discover business modules ===
 // Each module under @/modules/<code>/ exposes a manifest.ts + routes.ts.
@@ -39,6 +43,16 @@ const router = createRouter({
       component: () => import("@/shell/auth/LoginView.vue"),
     },
     {
+      path: "/register",
+      name: "register",
+      component: () => import("@/shell/auth/RegisterView.vue"),
+    },
+    {
+      path: "/403",
+      name: "access-denied",
+      component: () => import("@/shell/views/AccessDenied.vue"),
+    },
+    {
       path: "/",
       component: AppLayout,
       beforeEnter: requireAuth,
@@ -52,33 +66,95 @@ const router = createRouter({
         // Auto-mounted business module routes
         ...businessRoutes,
 
-        // Admin module
+        // Tenant console (组织控制台) — tenant_admin only
         {
           path: "admin",
           component: AdminLayout,
+          beforeEnter: requireTenantAdmin,
           children: [
-            { path: "",            name: "admin.home",     component: () => import("@/modules/admin/views/AdminHome.vue") },
-            { path: "members",     name: "admin.members",  component: () => import("@/modules/admin/views/MembersView.vue") },
-            { path: "roles",       name: "admin.roles",    component: () => import("@/modules/admin/views/RolesView.vue") },
-            { path: "departments", name: "admin.depts",    component: () => import("@/modules/admin/views/DepartmentsView.vue") },
-            { path: "settings",    name: "admin.settings", component: () => import("@/modules/admin/views/SettingsView.vue") },
-            { path: "audit",       name: "admin.audit",    component: () => import("@/modules/admin/views/AuditView.vue") },
-            { path: "dict",        name: "admin.dict",     component: () => import("@/modules/admin/views/DictView.vue") },
-            { path: "platform/tenants", name: "admin.platform.tenants", component: () => import("@/modules/admin/views/PlatformTenantsView.vue") },
+            { path: "",              name: "admin.home",          component: () => import("@/modules/admin/views/AdminHome.vue") },
+            { path: "members",       name: "admin.members",       component: () => import("@/modules/admin/views/MembersView.vue") },
+            { path: "registrations", name: "admin.registrations", component: () => import("@/modules/admin/views/RegistrationsView.vue") },
+            { path: "roles",         name: "admin.roles",         component: () => import("@/modules/admin/views/RolesView.vue") },
+            { path: "departments",   name: "admin.depts",         component: () => import("@/modules/admin/views/DepartmentsView.vue") },
+            { path: "settings",      name: "admin.settings",      component: () => import("@/modules/admin/views/SettingsView.vue") },
+            { path: "apps",          name: "admin.apps",          component: () => import("@/modules/admin/views/AppsView.vue") },
+            { path: "audit",         name: "admin.audit",         component: () => import("@/modules/admin/views/AuditView.vue") },
+            { path: "dict",          name: "admin.dict",          component: () => import("@/modules/admin/views/DictView.vue") },
+            // Platform-level pages moved to the Platform Console (/platform/*).
+            { path: "users",            redirect: "/platform/users" },
+            { path: "organizations",    redirect: "/platform/organizations" },
+            { path: "platform/tenants", redirect: "/platform/organizations" },
           ],
         },
 
-        // Personal settings (uses AdminLayout for unified sidebar)
+        // Platform Console — a left-rail module inside the app shell (NOT a
+        // standalone page). Global platform_admin only; no tenant context needed.
+        {
+          path: "platform",
+          component: PlatformLayout,
+          beforeEnter: requirePlatformAdmin,
+          children: [
+            { path: "",              name: "platform.home",          component: () => import("@/modules/platform/views/PlatformHome.vue") },
+            { path: "organizations", name: "platform.organizations", component: () => import("@/modules/admin/views/PlatformTenantsView.vue") },
+            { path: "users",         name: "platform.users",         component: () => import("@/modules/admin/views/UsersView.vue") },
+            { path: "registrations", name: "platform.registrations", component: () => import("@/modules/admin/views/RegistrationsView.vue"), props: { scope: "platform" } },
+          ],
+        },
+
+        // Personal center — its own layout, separate from admin
         {
           path: "me",
-          component: AdminLayout,
+          component: MeLayout,
           children: [
-            { path: "settings", name: "me.settings", component: () => import("@/modules/admin/views/MeSettingsView.vue") },
+            { path: "",         redirect: "/me/profile" },
+            { path: "profile",  name: "me.profile",  component: () => import("@/modules/me/views/ProfileView.vue") },
+            { path: "security", name: "me.security", component: () => import("@/modules/me/views/SecurityView.vue") },
+            { path: "sessions", name: "me.sessions", component: () => import("@/modules/me/views/SessionsView.vue") },
+            { path: "tenants",  name: "me.tenants",  component: () => import("@/modules/me/views/TenantsView.vue") },
+            // Back-compat
+            { path: "settings", redirect: "/me/profile" },
           ],
         },
       ],
     },
+    // Catch-all 404 — MUST stay last.
+    {
+      path: "/:pathMatch(.*)*",
+      name: "not-found",
+      component: () => import("@/shell/views/NotFound.vue"),
+    },
   ],
+});
+
+// Global guard: force a must-change user to the security page on EVERY navigation
+// (the parent route's beforeEnter only fires on subtree entry, not between siblings).
+// Runs restore() first so a hard reload also enforces it. Backend PasswordChangeGate
+// is the authoritative block; this is the UX redirect.
+router.beforeEach(async (to) => {
+  const auth = useAuthStore();
+  if (auth.loggedIn && !auth.restored) await auth.restore();
+  if (
+    auth.loggedIn &&
+    auth.user?.password_must_change &&
+    !to.path.startsWith("/me/security") &&
+    to.path !== "/login" &&
+    to.path !== "/register"
+  ) {
+    return { path: "/me/security", query: { forced: "1" } };
+  }
+  return true;
+});
+
+// Track recently-opened apps: any nav into /<moduleCode>/... bumps the stack.
+const moduleCodes = new Set(
+  Object.values(moduleManifests)
+    .map((m) => m.manifest.code)
+    .filter((c) => c !== "admin"),
+);
+router.afterEach((to) => {
+  const first = to.path.split("/").filter(Boolean)[0];
+  if (first && moduleCodes.has(first)) bumpRecent(first);
 });
 
 if (import.meta.env.DEV) {

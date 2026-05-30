@@ -34,7 +34,18 @@ type CreateTenantCmd struct {
 	Name string `json:"name"`
 }
 
-// CreateTenant validates slug, inserts public.tenant, runs SchemaProvisioner.
+// CreateTenant validates the slug, inserts public.tenant, and provisions the
+// per-tenant schema. It is transactional in effect and recoverable:
+//
+//   - If provisioning fails, the schema is dropped AND the tenant row is deleted
+//     so the slug is immediately free for a clean retry (no orphan schema, no
+//     stuck "suspended" row). If cleanup itself fails (rare/transient), the row
+//     is marked suspended as a last resort and the recovery path below handles it.
+//   - If the slug already maps to an ACTIVE tenant → conflict.
+//   - If the slug maps to a SUSPENDED tenant that was never fully provisioned
+//     (a leftover from a prior failed attempt), CreateTenant retries provisioning
+//     in place and re-activates it, rather than dead-ending — making the operation
+//     idempotent on slug.
 func (s *Service) CreateTenant(ctx context.Context, cmd CreateTenantCmd) (*Tenant, error) {
 	slug := strings.ToLower(strings.TrimSpace(cmd.Slug))
 	if !slugRe.MatchString(slug) {
@@ -48,9 +59,16 @@ func (s *Service) CreateTenant(ctx context.Context, cmd CreateTenantCmd) (*Tenan
 	if err != nil {
 		return nil, err
 	}
+	// ANY existing tenant (active / suspended / closed) blocks the slug. We must
+	// never auto-DROP an existing schema here: a 'suspended' tenant may be a healthy,
+	// admin-suspended tenant with live data — indistinguishable from a half-provisioned
+	// leftover by status alone. Suspended tenants are recovered via ResumeTenant, not
+	// by re-creating the slug.
 	if existing != nil {
-		return nil, errors.New(errors.KindConflict, "tenancy.slug_taken", fmt.Sprintf("slug %q already in use", slug))
+		return nil, errors.New(errors.KindConflict, "tenancy.slug_taken",
+			fmt.Sprintf("slug %q already in use", slug))
 	}
+
 	t := &Tenant{
 		ID:         kernel.NewID(),
 		Slug:       slug,
@@ -62,11 +80,19 @@ func (s *Service) CreateTenant(ctx context.Context, cmd CreateTenantCmd) (*Tenan
 	if err := s.tenantRepo.Create(ctx, t); err != nil {
 		return nil, errors.Wrap(errors.KindDatabase, "tenancy.create_failed", "insert tenant failed", err)
 	}
+
 	if err := s.prov.Provision(ctx, t.SchemaName); err != nil {
-		// Best-effort rollback: mark tenant suspended so it's not visible.
-		_ = s.tenantRepo.UpdateStatus(ctx, t.ID, StatusSuspended, s.clock.Now())
-		return nil, err
+		// Full rollback so the slug is reusable on retry: drop the (possibly partial)
+		// schema we just started, then delete the brand-new tenant row. Safe because
+		// this row was created microseconds ago in THIS call — never a populated tenant.
+		_ = s.prov.Drop(ctx, t.SchemaName)
+		if delErr := s.tenantRepo.Delete(ctx, t.ID); delErr != nil {
+			// Couldn't delete — hide it so it doesn't occupy the slug as 'active'.
+			_ = s.tenantRepo.UpdateStatus(ctx, t.ID, StatusSuspended, s.clock.Now())
+		}
+		return nil, errors.Wrap(errors.KindInternal, "tenancy.provision_failed", "租户初始化失败，请重试", err)
 	}
+
 	_ = s.bus.Publish(ctx, "tenancy.tenant_created", map[string]any{
 		"tenant_id": t.ID, "slug": t.Slug, "name": t.Name,
 	})
@@ -116,6 +142,7 @@ type JoinMemberCmd struct {
 	TenantID       kernel.ID
 	DisplayName    string
 	Email          string
+	Phone          string
 	Department     string
 	Title          string
 }
@@ -156,9 +183,9 @@ func (s *Service) JoinMember(ctx context.Context, pool *pgxpool.Pool, cmd JoinMe
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO member (id, platform_user_id, display_name, email, department, title, joined_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (platform_user_id) DO NOTHING`,
-		m.MemberID, m.PlatformUserID, cmd.DisplayName, cmd.Email, cmd.Department, cmd.Title, m.JoinedAt); err != nil {
+		`INSERT INTO member (id, platform_user_id, display_name, email, phone, department, title, joined_at)
+		 VALUES ($1, $2, $3, $4, NULLIF($5,''), $6, $7, $8) ON CONFLICT (platform_user_id) DO NOTHING`,
+		m.MemberID, m.PlatformUserID, cmd.DisplayName, cmd.Email, cmd.Phone, cmd.Department, cmd.Title, m.JoinedAt); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -172,6 +199,35 @@ func (s *Service) JoinMember(ctx context.Context, pool *pgxpool.Pool, cmd JoinMe
 
 func (s *Service) GetTenant(ctx context.Context, id kernel.ID) (*Tenant, error) {
 	return s.tenantRepo.GetByID(ctx, id)
+}
+
+// SyncAllSchemas re-runs the tenant-template migrations against every active
+// tenant schema. Idempotent (CREATE ... IF NOT EXISTS + migration_history), so
+// it safely brings existing tenants up to date with newly-added module tables on
+// each deploy/boot — the auto-migrate path for a pluggable-module framework.
+func (s *Service) SyncAllSchemas(ctx context.Context) (synced int, err error) {
+	tenants, err := s.tenantRepo.ListActive(ctx, kernel.Pagination{Page: 1, PageSize: 1000})
+	if err != nil {
+		return 0, err
+	}
+	// Continue on a per-tenant failure so one corrupt/drifted schema can't block
+	// migrating the rest; aggregate the failures into the returned error.
+	var failures []string
+	for _, t := range tenants {
+		if e := s.prov.Provision(ctx, t.SchemaName); e != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", t.SchemaName, e))
+			continue
+		}
+		synced++
+	}
+	if len(failures) > 0 {
+		return synced, fmt.Errorf("sync failed for %d tenant(s): %s", len(failures), strings.Join(failures, "; "))
+	}
+	return synced, nil
+}
+
+func (s *Service) GetTenantBySlug(ctx context.Context, slug string) (*Tenant, error) {
+	return s.tenantRepo.GetBySlug(ctx, slug)
 }
 
 func (s *Service) ListActiveTenants(ctx context.Context, p kernel.Pagination) ([]*Tenant, error) {

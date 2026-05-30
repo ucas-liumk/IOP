@@ -118,10 +118,13 @@ func runUser(ctx context.Context, a *app.App) {
 	fs := flag.NewFlagSet("user", flag.ExitOnError)
 	switch os.Args[2] {
 	case "create":
+		username := fs.String("username", "", "")
 		email := fs.String("email", "", "")
 		password := fs.String("password", "", "")
 		fs.Parse(os.Args[3:])
-		u, err := a.IAM.RegisterUser(ctx, iam.RegisterCmd{Email: *email, Password: *password})
+		u, err := a.IAM.RegisterUser(ctx, iam.RegisterCmd{
+			Username: *username, Email: *email, Password: *password,
+		})
 		dieOnErr(err)
 		printJSON(u)
 	default:

@@ -19,8 +19,8 @@ import (
 
 // SchemaProvisioner creates per-tenant schemas and applies the tenant_template migrations.
 type SchemaProvisioner struct {
-	pool         *pgxpool.Pool
-	templateDir  string
+	pool        *pgxpool.Pool
+	templateDir string
 }
 
 func NewSchemaProvisioner(pool *pgxpool.Pool, templateDir string) *SchemaProvisioner {

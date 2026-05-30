@@ -194,4 +194,3 @@ func (s *Service) CountMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenan
 }
 
 var _ pgx.Tx
-

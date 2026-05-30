@@ -9,12 +9,13 @@ import (
 	redislib "github.com/redis/go-redis/v9"
 
 	"github.com/leo/iop/server/internal/config"
+	"github.com/leo/iop/server/internal/contexts/okr"
+	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
+	"github.com/leo/iop/server/internal/contexts/tasks"
 	"github.com/leo/iop/server/internal/infrastructure/health"
 	loggerinfra "github.com/leo/iop/server/internal/infrastructure/logger"
 	pginfra "github.com/leo/iop/server/internal/infrastructure/pg"
 	redisinfra "github.com/leo/iop/server/internal/infrastructure/redis"
-	"github.com/leo/iop/server/internal/contexts/okr"
-	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
 	iface "github.com/leo/iop/server/internal/interface"
 	"github.com/leo/iop/server/internal/interface/middleware"
 	"github.com/leo/iop/server/internal/services/appstore"
@@ -34,14 +35,14 @@ import (
 
 // App holds every wired component. Owned by main(), shut down on signal.
 type App struct {
-	Cfg        *config.Config
-	Logger     *zap.Logger
-	Pool       *pgxpool.Pool
-	RDB        *redislib.Client
-	Platform   *tenantdb.PlatformDB
-	Tenant     *tenantdb.TenantDB
-	Bus        *eventbus.InprocBus
-	Health     *health.Registry
+	Cfg         *config.Config
+	Logger      *zap.Logger
+	Pool        *pgxpool.Pool
+	RDB         *redislib.Client
+	Platform    *tenantdb.PlatformDB
+	Tenant      *tenantdb.TenantDB
+	Bus         *eventbus.InprocBus
+	Health      *health.Registry
 	Dictionary  *dictionary.Service
 	DictMemory  dictionary.Repository
 	I18n        *localization.Service
@@ -121,16 +122,28 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		provisioner, bus, clk,
 	)
 
-	// IAM
-	secret := cfg.Auth.JWTSecret
-	if secret == "" {
-		secret = "dev-only-change-me-32-chars-min-len"
-	}
+	// IAM — secret resolution + prod validation happens in config.Validate()/ResolvedJWTSecret().
+	secret := cfg.ResolvedJWTSecret()
 	iamSvc := iam.NewService(
 		iam.NewPGRepo(pool),
+		iam.NewPGApplicationRepo(pool),
 		iam.NewHS256Signer(secret),
 		tenantSvc, rdb, bus, clk,
 	)
+
+	// Seed the built-in platform admin (global is_platform_admin flag; idempotent —
+	// checks the "admin" user exists first). No "system" tenant is created.
+	if err := iam.SeedDefaults(ctx, iamSvc, tenantSvc, pool, logger); err != nil {
+		logger.Warn("seed default admin failed", zap.Error(err))
+	}
+
+	// Bring every existing tenant schema up to date with the latest tenant-template
+	// migrations (e.g. new module tables). Idempotent; best-effort on boot.
+	if n, err := tenantSvc.SyncAllSchemas(ctx); err != nil {
+		logger.Warn("sync tenant schemas failed", zap.Int("synced", n), zap.Error(err))
+	} else {
+		logger.Info("tenant schemas synced", zap.Int("count", n))
+	}
 
 	tenantDB := tenantdb.NewTenantDB(pool)
 
@@ -171,6 +184,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	// registering it here is the ONLY change needed to add a new app.
 	registry := module.NewRegistry()
 	platformDB := tenantdb.NewPlatformDB(pool)
+	authz := func(resource, action string) gin.HandlerFunc {
+		return iam.RBAC(iamSvc, resource, action)
+	}
 	deps := module.Deps{
 		Pool:     pool,
 		Tenant:   tenantDB,
@@ -178,11 +194,26 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		Bus:      bus,
 		Logger:   logger,
 		Clock:    clk,
+		Authz:    authz,
 	}
 	registry.Register(okr.New(deps))
+	registry.Register(tasks.New(deps))
 	// Add future modules here, e.g.:
 	//   registry.Register(crm.New(deps))
 	//   registry.Register(approval.New(deps))
+
+	// Give the built-in tenant_member role read/write on every registered module's
+	// resources so members can use apps their tenant enabled (RBAC stays enforced;
+	// delete actions remain admin-only). Idempotent.
+	var memberPerms [][2]string
+	for _, p := range registry.AllPermissions() {
+		if p.Action == "read" || p.Action == "write" {
+			memberPerms = append(memberPerms, [2]string{p.Resource, p.Action})
+		}
+	}
+	if err := iamSvc.SeedRolePermissions(ctx, "tenant_member", memberPerms); err != nil {
+		logger.Warn("seed tenant_member module permissions failed", zap.Error(err))
+	}
 
 	appStore := appstore.NewService(pool, registry, clk)
 
@@ -222,18 +253,26 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 // Engine returns the wired Gin engine with all routes mounted.
 func (a *App) Engine() *gin.Engine {
 	r := iface.New(iface.Config{AllowedOrigins: a.Cfg.Server.AllowedOrigins}, a.Logger, a.Health)
-	r.Use(middleware.RateLimit(a.RDB, middleware.DefaultRateLimit()))
+	r.Use(middleware.SecurityHeaders(a.Cfg.IsProd()))
+	rlCfg := middleware.DefaultRateLimit()
+	if a.Cfg.Env == "dev" {
+		rlCfg = middleware.DevRateLimit()
+	}
+	r.Use(middleware.RateLimit(a.RDB, rlCfg))
 	r.Use(middleware.Idempotency(a.RDB))
 
 	api := r.Group("/api")
 	dictionary.RegisterRoutes(api, a.Dictionary)
-	iam.RegisterRoutes(api, a.IAM, a.Tenancy)
-	tenancy.RegisterRoutes(api, a.Tenancy, a.Pool)
+	iam.RegisterRoutes(api, a.IAM, a.Tenancy, a.Pool)
+	tenancy.RegisterPublicRoutes(api, a.Tenancy)
 
 	// Authenticated tenant-scoped group
 	authT := api.Group("")
 	authT.Use(iam.JWTAuth(a.IAM))
 	authT.Use(iam.TenantLoader(a.Tenancy))
+	// Block must-change users from the privileged/business surface (authoritative;
+	// allowlists /api/me* + /api/auth/* so they can still change their password).
+	authT.Use(iam.PasswordChangeGate(a.IAM))
 	audit.RegisterRoutes(authT, a.Audit)
 	notification.RegisterRoutes(authT, a.Notif)
 	if a.FileStorage != nil {
@@ -246,6 +285,9 @@ func (a *App) Engine() *gin.Engine {
 	// Module routes — Registry mounts /api/apps/<code>/* for every module.
 	// Each module also gets routes at the legacy /api/* paths via its own RegisterRoutes
 	// for backward compatibility during transition. Modules can choose to wire either or both.
+	authz := func(resource, action string) gin.HandlerFunc {
+		return iam.RBAC(a.IAM, resource, action)
+	}
 	deps := module.Deps{
 		Pool:     a.Pool,
 		Tenant:   a.Tenant,
@@ -253,12 +295,16 @@ func (a *App) Engine() *gin.Engine {
 		Bus:      a.Bus,
 		Logger:   a.Logger,
 		Clock:    kernel.RealClock{},
+		Authz:    authz,
+		AppEnabled: func(ctx context.Context, tenantID kernel.ID, code string) (bool, error) {
+			return a.AppStore.IsInstalled(ctx, tenantID, code)
+		},
 	}
 	a.Modules.MountAll(authT, deps)
 	// Backward-compat: also mount OKR at the flat /api/plans /api/reports /api/rollups paths
-	// so the existing frontend keeps working without recompile.
+	// so the existing frontend keeps working without recompile. Same RBAC gating.
 	if okrMod, _ := a.Modules.Get("okr").(*okr.Module); okrMod != nil {
-		okriface.RegisterRoutes(authT, okrMod.AppService())
+		okriface.RegisterRoutes(authT, okrMod.AppService(), authz)
 	}
 
 	// Personal /me routes — auth only (no admin gate)
@@ -268,17 +314,30 @@ func (a *App) Engine() *gin.Engine {
 	// /me/apps needs tenant context; mount under authT (after TenantLoader)
 	appstore.RegisterMeRoutes(authT, a.AppStore)
 
-	// Admin routes — require tenant_admin OR platform_admin (gate checks role grants)
+	// === Tenant console (/admin/*) === tenant-scoped: requires an active tenant
+	// context + tenant_admin role. This is the per-organization admin surface.
 	admin := authT.Group("")
 	admin.Use(iam.TenantAdminRequired(a.IAM))
 	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool)
-	iam.RegisterAdminRoutes(admin, a.IAM)
+	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool)
 	dictionary.RegisterAdminRoutes(admin, dictionary.AdminConfig{
 		Memory:   a.DictMemory,
 		TenantDB: a.Tenant,
 	}, []string{"plan_level", "report_type"})
 	appstore.RegisterAdminRoutes(admin, a.AppStore)
 	module.RegisterAdminRoutes(admin, a.Modules)
+
+	// === Platform console (/platform/*, /tenants) === GLOBAL, tenant-LESS.
+	// Gated by the global is_platform_admin flag (PlatformAdminRequired). Mounted
+	// directly under /api (NOT authT) so it does NOT require a tenant context — a
+	// platform admin governs across all tenants without belonging to any. The
+	// PasswordChangeGate still applies so a must-change admin must rotate first.
+	platform := api.Group("")
+	platform.Use(iam.JWTAuth(a.IAM))
+	platform.Use(iam.PasswordChangeGate(a.IAM))
+	platform.Use(iam.PlatformAdminRequired(a.IAM))
+	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool)
+	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
 
 	return r
 }

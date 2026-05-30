@@ -34,7 +34,7 @@ func (s *Service) ChangePassword(ctx context.Context, cmd ChangePasswordCmd) err
 	}
 	pool := s.repo.(*pgRepo).pool
 	_, err = pool.Exec(ctx,
-		`UPDATE public.platform_user SET password_hash = $1 WHERE id = $2`,
+		`UPDATE public.platform_user SET password_hash = $1, password_must_change = FALSE WHERE id = $2`,
 		newHash, cmd.PlatformUserID)
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "iam.change_password_failed", "改密码失败", err)
@@ -154,6 +154,27 @@ func (s *Service) DeleteRole(ctx context.Context, tenantID, roleID kernel.ID) er
 	return nil
 }
 
+// SeedRolePermissions idempotently grants a set of (resource, action) rules to a
+// built-in (tenant-less) role by code. Used at boot to give the default
+// tenant_member role read/write access to every registered module's resources,
+// so members can actually use apps their tenant enabled while RBAC stays enforced
+// (admins can still tighten this with custom roles). No-op if the role is absent.
+func (s *Service) SeedRolePermissions(ctx context.Context, roleCode string, resourceActions [][2]string) error {
+	role, err := s.repo.GetRoleByCode(ctx, roleCode, nil)
+	if err != nil {
+		return err
+	}
+	if role == nil {
+		return nil
+	}
+	for _, ra := range resourceActions {
+		if err := s.AddPolicy(ctx, role.ID, ra[0], ra[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // AddPolicy attaches a (resource, action) rule to a role.
 func (s *Service) AddPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error {
 	pool := s.repo.(*pgRepo).pool
@@ -186,22 +207,21 @@ func (s *Service) MemberRoles(ctx context.Context, memberID, tenantID kernel.ID)
 	return s.repo.ListMemberRoles(ctx, memberID, tenantID)
 }
 
-// IsPlatformAdmin returns whether a member has the platform_admin role grant.
-func (s *Service) IsPlatformAdmin(ctx context.Context, memberID, tenantID kernel.ID) bool {
-	roles, _ := s.repo.ListMemberRoles(ctx, memberID, tenantID)
-	for _, r := range roles {
-		if r.Code == "platform_admin" {
-			return true
-		}
-	}
-	return false
+// IsPlatformAdminUser is the authoritative, GLOBAL platform-admin check: it reads
+// the is_platform_admin flag on the platform_user, independent of any tenant
+// membership. This is what gates the platform console.
+func (s *Service) IsPlatformAdminUser(ctx context.Context, platformUserID kernel.ID) bool {
+	u, err := s.repo.GetUserByID(ctx, platformUserID)
+	return err == nil && u != nil && u.IsPlatformAdmin
 }
 
-// IsTenantAdmin returns whether a member has tenant_admin or platform_admin.
+// IsTenantAdmin reports whether the member is an admin OF THIS TENANT (holds the
+// tenant_admin role in this tenant). Global platform admins are NOT implicitly
+// tenant admins — they govern at the platform layer, not inside tenant data.
 func (s *Service) IsTenantAdmin(ctx context.Context, memberID, tenantID kernel.ID) bool {
 	roles, _ := s.repo.ListMemberRoles(ctx, memberID, tenantID)
 	for _, r := range roles {
-		if r.Code == "tenant_admin" || r.Code == "platform_admin" {
+		if r.Code == "tenant_admin" {
 			return true
 		}
 	}

@@ -2,16 +2,8 @@
   <div class="login-page">
     <div class="login-aside">
       <div class="aside-mark">I</div>
-      <h1 class="aside-title">
-        <span class="gradient-text">IOP</span>
-      </h1>
-      <p class="aside-tagline">企业内部协同办公平台</p>
-      <ul class="aside-features">
-        <li><span class="dot"></span>多租户 PG schema 隔离</li>
-        <li><span class="dot"></span>OKR 四级计划 + 日 / 周报</li>
-        <li><span class="dot"></span>跨部门工作汇总</li>
-        <li><span class="dot"></span>限流 / 幂等 / 慢查询防护</li>
-      </ul>
+      <h1 class="aside-title">一体化办公平台</h1>
+      <p class="aside-tagline">高效协同 · 创造价值</p>
       <div class="aside-foot">v3.1 · {{ year }}</div>
     </div>
 
@@ -19,16 +11,22 @@
       <form class="card login-form" @submit.prevent="submit">
         <div class="form-head">
           <h2>欢迎回来</h2>
-          <p class="sub">使用工作邮箱登录</p>
+          <p class="sub">使用用户名登录</p>
         </div>
 
         <label class="field">
-          <span class="label">邮箱</span>
-          <input class="input" v-model="email" type="email" required autofocus placeholder="you@company.com" />
+          <span class="label">用户名</span>
+          <input class="input" v-model="username" type="text" required autofocus autocomplete="username" placeholder="请输入用户名" />
         </label>
         <label class="field">
           <span class="label">密码</span>
-          <input class="input" v-model="password" type="password" required minlength="10" placeholder="至少 10 位，含字母与数字" />
+          <PasswordField
+            v-model="password"
+            :minlength="10"
+            required
+            autocomplete="current-password"
+            placeholder="至少 10 位，含字母与数字"
+          />
         </label>
 
         <div v-if="error" class="form-error">
@@ -41,8 +39,8 @@
         </button>
 
         <div class="form-foot">
-          <span class="muted">首次使用？</span>
-          联系管理员通过 <code>tenantctl</code> 创建账号
+          <span class="muted">还没有账号？</span>
+          <router-link to="/register" class="link">立即注册</router-link>
         </div>
       </form>
     </div>
@@ -53,10 +51,12 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "./auth.store";
+import { homeForRole } from "./guard";
+import PasswordField from "./PasswordField.vue";
 
 const auth = useAuthStore();
 const router = useRouter();
-const email = ref("");
+const username = ref("");
 const password = ref("");
 const loading = ref(false);
 const error = ref("");
@@ -66,11 +66,13 @@ async function submit() {
   loading.value = true;
   error.value = "";
   try {
-    await auth.login(email.value, password.value);
+    await auth.login(username.value, password.value);
     if (auth.tenants.length > 0 && !auth.tenant) {
       await auth.switchTenant(auth.tenants[0].id);
     }
-    router.push("/");
+    // Route by role: must-change → security page; platform admin → platform console;
+    // otherwise the tenant workspace.
+    router.push(homeForRole());
   } catch (e: any) {
     error.value = e.response?.data?.error?.message ?? "登录失败";
   } finally {
@@ -88,12 +90,15 @@ async function submit() {
 }
 
 .login-aside {
-  background: linear-gradient(160deg, #0d1b2e 0%, #1a3066 55%, #1e5fd9 100%);
-  color: white;
+  background-image: url("/login-bg.png");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  color: #0d1b2e;
   padding: var(--sp-10) var(--sp-8) var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-6);
+  gap: var(--sp-5);
   position: relative;
   overflow: hidden;
 }
@@ -101,9 +106,7 @@ async function submit() {
   content: "";
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(circle at 20% 110%, rgba(214, 56, 56, 0.18), transparent 50%),
-    radial-gradient(circle at 90% 20%, rgba(124, 77, 219, 0.22), transparent 55%);
+  background: linear-gradient(180deg, rgba(255,255,255,.35) 0%, rgba(255,255,255,0) 40%);
   pointer-events: none;
 }
 .login-aside > * { position: relative; z-index: 1; }
@@ -112,52 +115,35 @@ async function submit() {
   width: 56px;
   height: 56px;
   border-radius: var(--r-md);
-  background: linear-gradient(135deg, #ffffff 0%, #dbe6fd 100%);
-  color: var(--primary);
+  background: linear-gradient(135deg, var(--primary) 0%, #4a7ce8 100%);
+  color: #fff;
   font-size: 28px;
   font-weight: 800;
   display: flex;
   align-items: center;
   justify-content: center;
   letter-spacing: -0.04em;
-  box-shadow: var(--sh-3);
+  box-shadow: 0 6px 18px rgba(30,95,217,.32);
 }
-.aside-title { font-size: 48px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
-.gradient-text {
-  background: linear-gradient(90deg, #ffffff 0%, #dbe6fd 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+.aside-title {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  color: #0d1b2e;
+  margin: 0;
 }
 .aside-tagline {
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.85);
-  margin-top: -8px;
-}
-.aside-features {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  margin-top: var(--sp-6);
-}
-.aside-features li {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  font-size: 14px;
-  color: rgba(255, 255, 255, 0.8);
-}
-.aside-features .dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.04em;
+  color: rgba(13, 27, 46, 0.62);
+  margin-top: -4px;
 }
 .aside-foot {
   margin-top: auto;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(13, 27, 46, 0.45);
   font-family: var(--ff-mono);
 }
 
@@ -206,22 +192,20 @@ async function submit() {
 }
 
 .form-foot {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-3);
   text-align: center;
 }
-.form-foot code {
-  background: var(--surface-3);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-family: var(--ff-mono);
-  font-size: 11px;
-}
 .muted { color: var(--text-3); }
+.link {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+.link:hover { text-decoration: underline; }
 
 @media (max-width: 900px) {
   .login-page { grid-template-columns: 1fr; }
-  .login-aside { padding: var(--sp-7); }
-  .aside-features { display: none; }
+  .login-aside { padding: var(--sp-7); min-height: 280px; }
 }
 </style>

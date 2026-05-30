@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ const (
 // Service is the public API of IAM.
 type Service struct {
 	repo    Repository
+	appRepo ApplicationRepository
 	signer  TokenSigner
 	tenants *tenancy.Service
 	rdb     *redis.Client // session blacklist; nil = no Redis (degraded mode)
@@ -28,23 +30,48 @@ type Service struct {
 	clock   kernel.Clock
 }
 
-func NewService(repo Repository, signer TokenSigner, tenants *tenancy.Service, rdb *redis.Client, bus eventbus.Bus, clk kernel.Clock) *Service {
-	return &Service{repo: repo, signer: signer, tenants: tenants, rdb: rdb, bus: bus, clock: clk}
+func NewService(repo Repository, appRepo ApplicationRepository, signer TokenSigner, tenants *tenancy.Service, rdb *redis.Client, bus eventbus.Bus, clk kernel.Clock) *Service {
+	return &Service{repo: repo, appRepo: appRepo, signer: signer, tenants: tenants, rdb: rdb, bus: bus, clock: clk}
 }
 
 // RegisterUser creates a new platform user.
 type RegisterCmd struct {
-	Email    string
+	Username string // required for self-signup (used as login + tenant slug)
+	Phone    string // optional; CN mobile format (11 digits, starts 1[3-9])
+	Email    string // optional
 	Password string
 }
 
+// Username constraint mirrors the tenant slug regex so we can reuse a username as a slug.
+var usernameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,30}[a-z0-9]$`)
+
+// CN mobile pattern — basic shape check. Real verification will happen via SMS later.
+var phoneRe = regexp.MustCompile(`^1[3-9]\d{9}$`)
+
 func (s *Service) RegisterUser(ctx context.Context, cmd RegisterCmd) (*PlatformUser, error) {
-	email := strings.ToLower(strings.TrimSpace(cmd.Email))
-	if !strings.Contains(email, "@") {
-		return nil, errors.New(errors.KindParam, "iam.invalid_email", "邮箱格式错误")
+	username := strings.TrimSpace(cmd.Username)
+	if username != "" {
+		if existing, _ := s.repo.GetUserByUsername(ctx, username); existing != nil {
+			return nil, errors.New(errors.KindConflict, "iam.username_taken", "用户名已占用")
+		}
 	}
-	if existing, _ := s.repo.GetUserByEmail(ctx, email); existing != nil {
-		return nil, errors.New(errors.KindConflict, "iam.email_taken", "邮箱已注册")
+	email := strings.ToLower(strings.TrimSpace(cmd.Email))
+	if email != "" {
+		if !strings.Contains(email, "@") {
+			return nil, errors.New(errors.KindParam, "iam.invalid_email", "邮箱格式错误")
+		}
+		if existing, _ := s.repo.GetUserByEmail(ctx, email); existing != nil {
+			return nil, errors.New(errors.KindConflict, "iam.email_taken", "邮箱已注册")
+		}
+	}
+	phone := strings.TrimSpace(cmd.Phone)
+	if phone != "" {
+		if !phoneRe.MatchString(phone) {
+			return nil, errors.New(errors.KindParam, "iam.invalid_phone", "手机号格式错误")
+		}
+		if existing, _ := s.repo.GetUserByPhone(ctx, phone); existing != nil {
+			return nil, errors.New(errors.KindConflict, "iam.phone_taken", "手机号已注册")
+		}
 	}
 	hash, err := HashPassword(cmd.Password)
 	if err != nil {
@@ -52,6 +79,8 @@ func (s *Service) RegisterUser(ctx context.Context, cmd RegisterCmd) (*PlatformU
 	}
 	u := &PlatformUser{
 		ID:           kernel.NewID(),
+		Username:     username,
+		Phone:        phone,
 		Email:        email,
 		PasswordHash: hash,
 		Status:       "active",
@@ -64,7 +93,7 @@ func (s *Service) RegisterUser(ctx context.Context, cmd RegisterCmd) (*PlatformU
 }
 
 type LoginCmd struct {
-	Email    string
+	Login    string // username OR email
 	Password string
 	IP       string
 	UA       string
@@ -73,20 +102,38 @@ type LoginCmd struct {
 // Login authenticates the user. Returns a TokenPair with no tenant bound;
 // caller is expected to call SwitchTenant once they know which tenant.
 func (s *Service) Login(ctx context.Context, cmd LoginCmd) (*TokenPair, *PlatformUser, error) {
-	u, err := s.repo.GetUserByEmail(ctx, strings.ToLower(strings.TrimSpace(cmd.Email)))
+	login := strings.TrimSpace(cmd.Login)
+	// Emails are case-insensitive; usernames are stored exactly as registered.
+	if strings.Contains(login, "@") {
+		login = strings.ToLower(login)
+	}
+	// Brute-force lockout: after maxLoginFails wrong attempts on this login id,
+	// reject for loginLockTTL regardless of credentials. Keyed by the typed login
+	// (covers both unknown-user and wrong-password) so it also blunts enumeration.
+	failKey := "login_fail:" + login
+	if s.loginLocked(ctx, failKey) {
+		return nil, nil, errors.New(errors.KindRateLimit, "iam.too_many_attempts",
+			"登录失败次数过多，请 15 分钟后再试")
+	}
+	u, err := s.repo.GetUserByLogin(ctx, login)
 	if err != nil {
 		return nil, nil, err
 	}
 	if u == nil {
+		s.recordLoginFail(ctx, failKey)
 		return nil, nil, errors.New(errors.KindAuth, "iam.invalid_password", "用户名或密码错误")
 	}
+	if err := CheckPassword(cmd.Password, u.PasswordHash); err != nil {
+		s.recordLoginFail(ctx, failKey)
+		_ = s.bus.Publish(ctx, "iam.login_failed", map[string]any{"login": login})
+		return nil, nil, err
+	}
+	// Status checked AFTER password so a disabled account is indistinguishable from
+	// a wrong password to an unauthenticated probe (no user-enumeration oracle).
 	if u.Status != "active" {
 		return nil, nil, errors.New(errors.KindForbidden, "iam.user_disabled", "账号已停用")
 	}
-	if err := CheckPassword(cmd.Password, u.PasswordHash); err != nil {
-		_ = s.bus.Publish(ctx, "iam.login_failed", map[string]any{"email": u.Email})
-		return nil, nil, err
-	}
+	s.clearLoginFail(ctx, failKey)
 	now := s.clock.Now()
 	sess := &Session{
 		ID:             kernel.NewID(),
@@ -201,6 +248,53 @@ func (s *Service) isBlacklisted(ctx context.Context, sessionID kernel.ID) bool {
 	}
 	v, _ := s.rdb.Get(ctx, "session:revoked:"+string(sessionID)).Result()
 	return v == "1"
+}
+
+// Brute-force lockout tunables.
+const (
+	maxLoginFails = 5
+	loginLockTTL  = 15 * time.Minute
+)
+
+func (s *Service) loginLocked(ctx context.Context, failKey string) bool {
+	if s.rdb == nil {
+		return false
+	}
+	n, _ := s.rdb.Get(ctx, failKey).Int()
+	return n >= maxLoginFails
+}
+
+func (s *Service) recordLoginFail(ctx context.Context, failKey string) {
+	if s.rdb == nil {
+		return
+	}
+	n, _ := s.rdb.Incr(ctx, failKey).Result()
+	if n == 1 {
+		_ = s.rdb.Expire(ctx, failKey, loginLockTTL).Err()
+	}
+}
+
+func (s *Service) clearLoginFail(ctx context.Context, failKey string) {
+	if s.rdb == nil {
+		return
+	}
+	_ = s.rdb.Del(ctx, failKey).Err()
+}
+
+// RevokeAllSessions revokes every active session for a platform user (DB flag +
+// Redis blacklist) so a disabled/role-changed account loses access immediately
+// instead of staying valid until token expiry.
+func (s *Service) RevokeAllSessions(ctx context.Context, userID kernel.ID) error {
+	ids, err := s.repo.RevokeUserSessions(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if s.rdb != nil {
+		for _, id := range ids {
+			_ = s.rdb.Set(ctx, "session:revoked:"+string(id), "1", refreshTTL).Err()
+		}
+	}
+	return nil
 }
 
 func (s *Service) issueTokens(sess *Session, tid, mid *kernel.ID) (*TokenPair, error) {

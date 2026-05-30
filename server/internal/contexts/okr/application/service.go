@@ -189,10 +189,10 @@ func (s *Service) SubmitDaily(ctx context.Context, cmd SubmitDailyCmd) (*domain.
 }
 
 type SubmitWeeklyCmd struct {
-	Owner       kernel.ID
+	Owner        kernel.ID
 	WeekContains time.Time // any day in the target week
-	Summary     string
-	Entries     []EntryInput
+	Summary      string
+	Entries      []EntryInput
 }
 
 func (s *Service) SubmitWeekly(ctx context.Context, cmd SubmitWeeklyCmd) (*domain.Report, error) {

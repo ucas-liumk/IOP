@@ -81,6 +81,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { getCatalog, installApp, uninstallApp, appHomeRoute, type CatalogEntry, type Manifest } from "./appstore";
+import { useNotification } from "@/shell/notify";
+import { useConfirm } from "@/shell/confirm";
+
+const notify = useNotification();
+const { confirm } = useConfirm();
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ (e: "close"): void; (e: "navigate", path: string): void }>();
@@ -127,14 +132,14 @@ async function reload() {
 async function toggle(a: CatalogEntry) {
   try {
     if (a.installed) {
-      if (!confirm(`从工作台移除 "${a.name}"？`)) return;
+      if (!(await confirm({ title: "确认", message: `从工作台移除 "${a.name}"？`, danger: true }))) return;
       await uninstallApp(a.code);
     } else {
       await installApp(a.code);
     }
     await reload();
   } catch (e: any) {
-    alert(e.response?.data?.error?.message ?? "操作失败");
+    notify.error(e.response?.data?.error?.message ?? "操作失败");
   }
 }
 </script>

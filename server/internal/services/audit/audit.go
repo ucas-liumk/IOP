@@ -35,11 +35,11 @@ type Service struct {
 	tenant  *tenantdb.TenantDB
 	logger  *zap.Logger
 
-	buf   chan Entry
-	wg    sync.WaitGroup
-	mu    sync.Mutex
-	stop  chan struct{}
-	open  bool
+	buf  chan Entry
+	wg   sync.WaitGroup
+	mu   sync.Mutex
+	stop chan struct{}
+	open bool
 }
 
 // tenantLookup gives Service access to GetTenant without importing tenancy package directly.

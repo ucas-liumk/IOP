@@ -16,20 +16,20 @@ import (
 )
 
 const (
-	MaxFileSize = 50 << 20 // 50 MB
+	MaxFileSize   = 50 << 20 // 50 MB
 	defaultBucket = "iop-files"
 )
 
 type Attachment struct {
-	ID         kernel.ID `json:"id"`
-	BizModule  string    `json:"biz_module"`
-	BizID      string    `json:"biz_id"`
-	ObjectKey  string    `json:"object_key"`
-	Name       string    `json:"name"`
-	Size       int64     `json:"size"`
-	MimeType   string    `json:"mime_type"`
-	Uploader   kernel.ID `json:"uploader"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID        kernel.ID `json:"id"`
+	BizModule string    `json:"biz_module"`
+	BizID     string    `json:"biz_id"`
+	ObjectKey string    `json:"object_key"`
+	Name      string    `json:"name"`
+	Size      int64     `json:"size"`
+	MimeType  string    `json:"mime_type"`
+	Uploader  kernel.ID `json:"uploader"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Config struct {

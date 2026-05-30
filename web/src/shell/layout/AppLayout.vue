@@ -7,12 +7,17 @@
         <router-view />
       </main>
     </div>
+
+    <!-- App-wide singletons (teleported to body; no auth dependency). -->
+    <Toast />
+    <ConfirmDialog />
   </div>
 </template>
 
 <script setup lang="ts">
 import TopBar from "./TopBar.vue";
 import LeftRail from "./LeftRail.vue";
+import { Toast, ConfirmDialog } from "@/shell/components";
 </script>
 
 <style scoped>

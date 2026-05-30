@@ -8,8 +8,8 @@ import (
 
 // PlanFilter is a value object describing a Plan query.
 type PlanFilter struct {
-	Owner kernel.ID
-	Level PlanLevel
+	Owner      kernel.ID
+	Level      PlanLevel
 	Pagination kernel.Pagination
 }
 

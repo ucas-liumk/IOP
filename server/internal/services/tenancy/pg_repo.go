@@ -94,6 +94,11 @@ func (r *pgTenantRepo) UpdateStatus(ctx context.Context, id kernel.ID, status st
 	return err
 }
 
+func (r *pgTenantRepo) Delete(ctx context.Context, id kernel.ID) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM public.tenant WHERE id = $1`, id)
+	return err
+}
+
 type pgMembershipRepo struct{ pool *pgxpool.Pool }
 
 func NewPGMembershipRepo(pool *pgxpool.Pool) MembershipRepository {

@@ -80,6 +80,35 @@ func TenantLoader(tenants *tenancy.Service) gin.HandlerFunc {
 }
 
 // RBAC enforces (resource, action) on the current member+tenant.
+// PasswordChangeGate blocks a user whose password_must_change flag is set from
+// reaching any privileged/business endpoint until they change their password. It
+// allowlists the personal (/api/me*) and auth (/api/auth/*) surfaces so the shell
+// can load and POST /me/password / switch-tenant / logout still work. This is the
+// authoritative server-side enforcement — the SPA guard is only UX.
+func PasswordChangeGate(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p := c.Request.URL.Path
+		// Allowlist the auth + personal subtrees only. Delimiter-safe so a future
+		// route like /api/members can't accidentally bypass the gate.
+		if strings.HasPrefix(p, "/api/auth/") || p == "/api/me" || strings.HasPrefix(p, "/api/me/") {
+			c.Next()
+			return
+		}
+		claims, ok := ClaimsFromContext(c.Request.Context())
+		if !ok || claims.PlatformUserID == "" {
+			c.Next()
+			return
+		}
+		u, err := svc.repo.GetUserByID(c.Request.Context(), claims.PlatformUserID)
+		if err == nil && u != nil && u.PasswordMustChange {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.password_change_required",
+				"请先修改初始密码后再使用"))
+			return
+		}
+		c.Next()
+	}
+}
+
 func RBAC(svc *Service, resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := ClaimsFromContext(c.Request.Context())

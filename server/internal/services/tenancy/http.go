@@ -9,6 +9,24 @@ import (
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
+// RegisterPublicRoutes mounts unauthenticated lookup endpoints.
+// Currently: GET /public/organizations — list of active tenants for the register dropdown.
+// Only exposes id/name/slug (no schema_name, no internal state).
+func RegisterPublicRoutes(r *gin.RouterGroup, svc *Service) {
+	r.GET("/public/organizations", func(c *gin.Context) {
+		ts, err := svc.ListActiveTenants(c.Request.Context(), kernel.Pagination{Page: 1, PageSize: 500})
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		out := make([]gin.H, 0, len(ts))
+		for _, t := range ts {
+			out = append(out, gin.H{"id": t.ID, "name": t.Name, "slug": t.Slug})
+		}
+		apiresp.OK(c, gin.H{"organizations": out, "count": len(out)})
+	})
+}
+
 // RegisterRoutes wires /tenants/* (platform admin).
 // Caller is expected to gate these with RBAC platform_admin.
 func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {

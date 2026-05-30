@@ -14,14 +14,14 @@ import (
 )
 
 type Notification struct {
-	ID        kernel.ID `json:"id"`
-	Recipient kernel.ID `json:"recipient"`
-	Type      string    `json:"type"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body,omitempty"`
-	Payload   any       `json:"payload,omitempty"`
-	Read      bool      `json:"read"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        kernel.ID  `json:"id"`
+	Recipient kernel.ID  `json:"recipient"`
+	Type      string     `json:"type"`
+	Title     string     `json:"title"`
+	Body      string     `json:"body,omitempty"`
+	Payload   any        `json:"payload,omitempty"`
+	Read      bool       `json:"read"`
+	CreatedAt time.Time  `json:"created_at"`
 	ReadAt    *time.Time `json:"read_at,omitempty"`
 }
 

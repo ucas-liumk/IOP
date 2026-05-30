@@ -56,8 +56,9 @@ func (m *Module) Manifest() module.Manifest {
 	}
 }
 
-// RegisterRoutes mounts /apps/okr/... under the caller's group.
+// RegisterRoutes mounts /apps/okr/... under the caller's group, gating each
+// route by the module's declared RBAC permissions via deps.Authz.
 // Legacy /api/plans /api/reports /api/rollups stays wired in app.go for now.
-func (m *Module) RegisterRoutes(api *gin.RouterGroup, _ module.Deps) {
-	okriface.RegisterRoutes(api, m.app)
+func (m *Module) RegisterRoutes(api *gin.RouterGroup, deps module.Deps) {
+	okriface.RegisterRoutes(api, m.app, deps.Authz)
 }

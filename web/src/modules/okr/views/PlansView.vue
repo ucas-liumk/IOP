@@ -110,6 +110,9 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from "vue";
 import { addItem as apiAddItem, createPlan, listPlans, type Plan } from "../api/okr";
+import { useNotification } from "@/shell/notify";
+
+const notify = useNotification();
 
 const plans = ref<Plan[]>([]);
 const filterLevel = ref("");
@@ -141,7 +144,7 @@ async function create() {
     form.title = "";
     showCreate.value = false;
     await reload();
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "创建失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "创建失败"); }
   finally { loading.value = false; }
 }
 
@@ -152,7 +155,7 @@ async function addItem(p: Plan) {
     await apiAddItem(p.id, draft.title, draft.weight);
     draft.title = ""; draft.weight = 0;
     await reload();
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "添加失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "添加失败"); }
 }
 
 function today() { return new Date().toISOString().slice(0, 10); }

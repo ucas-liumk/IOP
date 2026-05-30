@@ -96,6 +96,9 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { listReports, submitDaily, submitWeekly, type Report } from "../api/okr";
+import { useNotification } from "@/shell/notify";
+
+const notify = useNotification();
 
 const reports = ref<Report[]>([]);
 const filterType = ref("");
@@ -117,7 +120,7 @@ async function postDaily() {
     await submitDaily({ day: daily.day, summary: daily.summary, entries: [] });
     daily.summary = ""; showDaily.value = false;
     await reload();
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "提交失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "提交失败"); }
   finally { loading.value = false; }
 }
 async function postWeekly() {
@@ -126,7 +129,7 @@ async function postWeekly() {
     await submitWeekly({ week_contains: weekly.week_contains, summary: weekly.summary, entries: [] });
     weekly.summary = ""; showWeekly.value = false;
     await reload();
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "提交失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "提交失败"); }
   finally { loading.value = false; }
 }
 function today() { return new Date().toISOString().slice(0, 10); }

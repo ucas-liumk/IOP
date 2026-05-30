@@ -42,6 +42,9 @@ type TenantRepository interface {
 	GetBySlug(ctx context.Context, slug string) (*Tenant, error)
 	ListActive(ctx context.Context, p kernel.Pagination) ([]*Tenant, error)
 	UpdateStatus(ctx context.Context, id kernel.ID, status string, at time.Time) error
+	// Delete removes the tenant row entirely. Used to roll back a failed
+	// provisioning so the slug is free for a clean retry.
+	Delete(ctx context.Context, id kernel.ID) error
 }
 
 // MembershipRepository abstracts persistence for TenantMembership.

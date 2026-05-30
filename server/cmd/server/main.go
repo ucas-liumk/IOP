@@ -20,6 +20,14 @@ func main() {
 		log.Fatalf("config load: %v", err)
 	}
 
+	warnings, err := cfg.Validate()
+	for _, w := range warnings {
+		log.Printf("[config warning] %s", w)
+	}
+	if err != nil {
+		log.Fatalf("config validation: %v", err)
+	}
+
 	a, cleanup, err := app.Build(ctx, cfg)
 	if err != nil {
 		log.Fatalf("app build: %v", err)

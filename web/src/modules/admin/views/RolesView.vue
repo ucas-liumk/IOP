@@ -66,6 +66,11 @@
 import { onMounted, reactive, ref, watch } from "vue";
 import { listRoles, createRole, deleteRole, addPolicy, removePolicy, type Role } from "../api/admin";
 import { getPermissionRegistry, type PermissionRegistry } from "@/shell/appcenter/appstore";
+import { useNotification } from "@/shell/notify";
+import { useConfirm } from "@/shell/confirm";
+
+const notify = useNotification();
+const { confirm } = useConfirm();
 
 const roles = ref<Role[]>([]);
 const perms = ref<PermissionRegistry>({ permissions: [], by_resource: {} });
@@ -87,13 +92,13 @@ async function create() {
     await createRole(newRole.code, newRole.name);
     newRole.code = ""; newRole.name = ""; showCreate.value = false;
     await reload();
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "创建失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "创建失败"); }
   finally { saving.value = false; }
 }
 async function del(id: string) {
-  if (!confirm("确定删除该角色？")) return;
+  if (!(await confirm({ title: "确认", message: "确定删除该角色？", danger: true }))) return;
   try { await deleteRole(id); await reload(); }
-  catch (e: any) { alert(e.response?.data?.error?.message ?? "删除失败"); }
+  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "删除失败"); }
 }
 async function addPol(roleId: string) {
   const p = newPol[roleId];
@@ -102,11 +107,11 @@ async function addPol(roleId: string) {
     await addPolicy(roleId, p.resource, p.action);
     p.resource = ""; p.action = "";
     await reload();
-  } catch (e: any) { alert(e.response?.data?.error?.message ?? "添加失败"); }
+  } catch (e: any) { notify.error(e.response?.data?.error?.message ?? "添加失败"); }
 }
 async function removePol(roleId: string, resource: string, action: string) {
   try { await removePolicy(roleId, resource, action); await reload(); }
-  catch (e: any) { alert(e.response?.data?.error?.message ?? "移除失败"); }
+  catch (e: any) { notify.error(e.response?.data?.error?.message ?? "移除失败"); }
 }
 </script>
 

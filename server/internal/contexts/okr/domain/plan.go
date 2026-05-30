@@ -75,9 +75,9 @@ func (p *Plan) AddItem(title string, weight int, now time.Time) (*PlanItem, erro
 		return nil, ErrWeightOverflow
 	}
 	item := &PlanItem{
-		ID: kernel.NewID(),
+		ID:    kernel.NewID(),
 		Title: title, Weight: weight,
-		Status: ItemTodo,
+		Status:    ItemTodo,
 		SortOrder: len(p.Items) + 1,
 		CreatedAt: now, UpdatedAt: now,
 	}

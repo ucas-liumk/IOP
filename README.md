@@ -1,138 +1,146 @@
-# IOP
+# IOP · 一站通办
 
-企业内部多租户 B 端办公平台基座. v3.1 设计 spec 在 `docs/superpowers/specs/`, M1 实施 plan 在 `docs/superpowers/plans/`.
+> 多租户 B 端办公平台**基座（framework）** — 像 ruoyi / jeecg 一样开箱即用，但天生多租户、可插拔业务模块。
+> A multi-tenant B2B office-platform **framework**: schema-isolated tenants, pluggable business modules, JWT+RBAC, and a clean platform/tenant admin split.
 
-## 当前状态
+---
 
-- ✅ **M1 完成**: 基座 + 基础设施 + livez/readyz/version/metrics + 字典 + i18n
-- ⏳ M2 (next): Tenancy + IAM + 命门测试 + B2B SaaS 基本盘 (限流/幂等/慢查询/备份)
-- M3: Audit + Notification + FileStorage + Dictionary 完整
-- M4: OKR 完整闭环 (核心学 DDD 里程碑)
-- M5: 生产部署 + KingbaseV8
+## ✨ 特性
 
-## 目录
+- **多租户隔离** — 每个组织独占一个 PostgreSQL schema（`tenant_<slug>`），物理隔离；5 个「命门」隔离测试守护。
+- **平台 / 组织双控制台** — 平台管理员（全局身份）治理所有组织/用户/注册申请；组织管理员只管本组织内部（成员/角色/部门/设置）。
+- **可插拔业务模块** — 一个 `Module` 契约（Manifest + 路由），注册一行即接入；前端按约定自动发现挂载。内置两个参考模块：**OKR 工作安排**、**任务清单（仿滴答清单）**。
+- **认证与授权** — 用户名/手机号登录、JWT(HS256) + 刷新、RBAC（资源×动作，模块声明、角色编辑器授予并在路由层强制）、暴力破解锁定、停用即时吊销会话、首登强制改密。
+- **注册-审批制** — 自助申请加入组织 → 管理员审批后开通账号。
+- **应用中心** — 管理员按组织启用/停用应用；成员从左下角「添加」固定到左侧菜单。
+- **B 端基本盘** — Redis 滑动窗口限流、幂等、慢查询钩子、审计日志、健康检查（livez/readyz）、Prometheus `/metrics`、优雅退出、安全响应头。
+- **前端体验** — Vue 3 + Pinia + Vite，统一外壳（顶栏 + 左侧应用栏 + 工作台），全局 toast/确认弹窗、404/403、骨架屏。
 
-```
-iop/
-├── server/                  Go 后端 (单 cmd/server 二进制)
-│   ├── cmd/{server,migrate,tenantctl}/
-│   ├── internal/
-│   │   ├── shared/{kernel,errors,eventbus,tenantdb}/    跨上下文最小内核
-│   │   ├── services/{dictionary,localization}/          服务包 (M3 加更多)
-│   │   ├── infrastructure/{pg,redis,minio,logger,metrics,health}/
-│   │   ├── interface/{middleware,apiresp,server.go}
-│   │   ├── config/  app/
-│   ├── migrations/{public,tenant_template}/
-│   ├── api/openapi.yaml
-│   ├── configs/dev.yaml + i18n/
-│   └── test/integration/
-├── web/                     Vue 3 + Vite 单 SPA
-│   ├── src/{shell,api,router,styles,utils}/
-│   ├── package.json + vite.config.ts
-├── deployments/             docker-compose dev + nginx
-├── docs/superpowers/        spec + plan
-├── scripts/                 dev.sh / openapi-gen.sh
-└── legacy/                  v1 资产 (Spring Boot), 仅作迁移参考
-```
+## 🧱 技术栈
 
-## 快速开始
+| 层 | 技术 |
+|---|---|
+| 后端 | Go 1.26 · gin · pgx/v5 · 模块化单体（DDD 四层）· 进程内事件总线 |
+| 前端 | Vue 3 · TypeScript · Pinia · Vue Router · Vite |
+| 存储 | PostgreSQL 16（schema 隔离）· Redis 7 · MinIO（S3 兼容） |
+| 运维 | Docker Compose · Nginx · 迁移工具 · Prometheus 指标 |
 
-需要 Go 1.22+, Node 20+, Docker.
+## 🚀 快速开始
+
+**前置**：Go ≥ 1.26、Node ≥ 18、Docker（含 Compose）。
+
+### 一条命令（推荐）
 
 ```bash
-# 一键启动 (推荐):
+git clone https://github.com/ucas-liumk/IOP.git
+cd IOP
 ./scripts/dev.sh
 ```
 
-手动:
+`dev.sh` 会：启动 db/redis/minio → 跑数据库迁移 → 首次自动 `npm install` → 同时启动后端(:8080)与前端(:5174)。
 
-```bash
-# 1. 起依赖
-cd deployments && docker compose up -d db redis minio
+打开 **http://localhost:5174**，用内置平台管理员登录：
 
-# 2. 跑迁移
-cd ../server && go run ./cmd/migrate up
-
-# 3. 起后端 (终端 A)
-go run ./cmd/server     # → http://localhost:8080
-
-# 4. 起前端 (终端 B)
-cd ../web && npm install && npm run dev   # → http://localhost:5174
+```
+用户名: admin
+密码:   Admin12345!     # 首次登录会强制要求修改
 ```
 
-## 端口映射
+> 登录后即进入**平台控制台**：先「组织机构」开通一个组织，再「全局用户」为其创建一个组织管理员，该管理员登录后即可进入**组织控制台**管理本组织。
 
-本地 SSH 隧道占用 5432/6379/9000/5173, 因此本项目使用替代端口:
+### 手动分步（等价）
 
-| 服务 | 容器内 | 主机端口 |
+```bash
+# 1) 基础设施
+cd deployments && docker compose up -d db redis minio && cd ..
+# 2) 迁移 + 启动后端（读取 server/configs/dev.yaml）
+cd server && go run ./cmd/migrate up && go run ./cmd/server
+# 3) 另开一个终端：前端
+cd web && npm install && npm run dev
+```
+
+### 全 Docker（含已构建的前后端镜像）
+
+```bash
+cd deployments && docker compose --profile full up --build
+# 前端 http://localhost:5173 · 后端 http://localhost:8080
+```
+
+## 🗺️ 架构与模型
+
+```
+平台 (Platform)
+└── 组织 (Organization ≡ Tenant, 1:1, 独立 schema)
+    └── 部门 (Department, 组织内部架构)
+        └── 成员 (Member ← 关联全局 platform_user)
+```
+
+- **组织 ≡ 租户**：业务上叫「组织」，技术上是一个隔离的「租户 schema」，一一对应。
+- **platform_admin 是全局身份**（`platform_user.is_platform_admin`），不归属任何组织，只在平台层治理。
+- **租户管理员**在「组织控制台」自治本组织；平台管理员**不直接介入**组织内部业务数据。
+
+两套控制台（都在统一外壳内，左侧栏切换）：
+
+| | 平台控制台 `/platform` | 组织控制台 `/admin` |
 |---|---|---|
-| PostgreSQL | 5432 | **5433** |
-| Redis      | 6379 | **6380** |
-| MinIO API  | 9000 | **9100** |
-| MinIO UI   | 9001 | **9101** |
-| Server     | -    | **8080** |
-| Web (vite) | -    | **5174** |
+| 谁 | 平台管理员（全局） | 组织管理员 |
+| 范围 | 全部组织 / 全部用户 / 全部注册申请 | 仅本组织 |
+| 内容 | 概览、组织机构、全局用户、注册申请 | 成员、角色、部门、设置、注册申请、应用、字典、审计 |
 
-## 主要命令
+详见 [`docs/`](docs/)（架构 spec、运维手册、开发指南）。
 
-```bash
-# Backend
-make -C server build        # 构建 server / migrate / tenantctl
-make -C server test         # 单测 (要求 PG 起着)
-make -C server lint         # golangci-lint
-make -C server dev          # go run ./cmd/server
-make -C server migrate      # go run ./cmd/migrate up
-
-# Integration smoke
-cd server && IOP_INTEGRATION=1 go test ./test/integration/... -v
-
-# Frontend
-cd web && npm run build
-cd web && npm run dev
-
-# OpenAPI
-make -C server openapi-gen  # M1 stub; M3+ 自动生成前端 SDK
-```
-
-## M1 验证
+## 🧩 新增一个业务模块（≈ 1 行）
 
 ```bash
-curl http://localhost:8080/livez                 # {"status":"live"}
-curl http://localhost:8080/readyz                # {"live":true,"ready":true}
-curl http://localhost:8080/version               # {"version":"dev"}
-curl http://localhost:8080/healthz               # 详细依赖矩阵
-curl http://localhost:8080/api/dict/plan_level   # envelope 包裹的字典项
-curl -H "X-Request-Id: abc" http://localhost:8080/version  # trace_id 回响
+./scripts/new-module.sh crm "客户管理 CRM" "业务管理"   # 生成后端 DDD 四层 + 前端模块骨架
 ```
 
-打开 http://localhost:5174 看工作台首页, 包含版本号 + readyz 状态 + 字典样例 + 错误 envelope 演示.
+然后在 `server/internal/app/app.go` 注册一行：
 
-## 开发约定
+```go
+registry.Register(crm.New(deps))
+```
 
-- 提交粒度小, TDD 优先 (见 `docs/superpowers/plans/`)
-- 跨服务通信走 `internal/shared/eventbus` (Publish-Subscribe), 不直接 import
-- 错误统一 `internal/shared/errors`, code = `<source>.<resource>.<reason>`
-- 日志 trace_id 贯穿; 不打 password / token / secret (logger.Sanitize)
-- 多租户 DB 访问走 `tenantdb.TenantDB.Transaction` (自动 SET LOCAL search_path)
+重启即生效：路由挂到 `/api/apps/crm/*`，权限自动进角色编辑器，事件自动被审计/通知订阅，前端按 `manifest.ts` 自动发现挂载，管理员在「应用管理」启用后成员即可使用。完整说明见 [`docs/developer/adding-new-module.md`](docs/developer/adding-new-module.md)。
 
-## 设计文档
-
-- `docs/superpowers/specs/2026-05-28-go-base-design-v3.md` v3.1 现行 spec (取代 v2.1.1)
-- `docs/superpowers/plans/2026-05-29-m1-foundation.md` M1 实施计划 (24 task)
-
-## 测试覆盖 (M1)
+## 📁 目录
 
 ```
-internal/shared/kernel        13 tests (ID, ctx, time, pagination)
-internal/shared/errors         4 tests (Kind, Wrap, Unwrap, As)
-internal/shared/eventbus       2 tests (publish/subscribe, multi-subscriber)
-internal/shared/tenantdb       3 tests (SET LOCAL search_path, missing ctx, SQL inject guard)
-internal/infrastructure/pg     2 tests (pool connect, invalid DSN)
-internal/infrastructure/logger 2 tests (JSON output, sanitize sensitive keys)
-internal/infrastructure/health 3 tests (healthy, critical down, noncritical down)
-internal/interface/middleware  3 tests (RequestID, Recover panic catch)
-internal/interface/apiresp     2 tests (OK envelope, Fail kind→status)
-internal/services/dictionary   3 tests (lookup, unknown, filter inactive)
-internal/services/localization 3 tests (known, fallback, template args)
-test/integration               1 test  (9 subtests, end-to-end)
+IOP/
+├── server/                      Go 后端（cmd/server | migrate | tenantctl）
+│   ├── internal/
+│   │   ├── shared/{kernel,errors,eventbus,tenantdb,module}/   最小内核 + 模块契约
+│   │   ├── services/{iam,tenancy,audit,dictionary,notification,filestorage,appstore,...}/
+│   │   ├── contexts/{okr,tasks}/                              业务模块（DDD 四层）
+│   │   ├── infrastructure/{pg,redis,minio,metrics,health,logger}/
+│   │   ├── interface/{middleware,apiresp,server}/  config/  app/
+│   ├── migrations/{public,tenant_template}/                  平台 + 每租户迁移
+│   └── configs/dev.yaml
+├── web/                         Vue 3 SPA
+│   └── src/{shell,modules/{admin,platform,me,okr,tasks},router,api}/
+├── deployments/                 docker-compose · Dockerfile · nginx · .env.example · backup
+├── scripts/                     dev.sh · new-module.sh · ...
+└── docs/                        spec · 运维 · 开发指南
 ```
+
+## 🔐 安全与默认账号
+
+- 默认平台管理员 `admin / Admin12345!` **仅用于首次引导**，首登强制改密；生产请用 `IOP_SEED_ADMIN_PASSWORD` 指定。
+- 生产环境**必须**设置 `IOP_AUTH_JWT_SECRET`（≥32 位）、CORS 不为 `*`、PG `sslmode=require` —— 否则服务启动即失败（fail-fast）。
+- 配置覆盖：环境变量 `IOP_<SECTION>_<KEY>` 覆盖 `configs/<env>.yaml`，见 [`deployments/.env.example`](deployments/.env.example)。
+- 漏洞上报与安全说明见 [SECURITY.md](SECURITY.md)。
+
+## 🧪 测试
+
+```bash
+cd server && go test ./...                              # 单元
+IOP_INTEGRATION=1 IOP_TEST_DB_DSN="postgres://iop:iop_dev@localhost:5433/iop?sslmode=disable" \
+  go test ./test/integration/...                        # 集成（含 5 个租户隔离命门测试，需 docker 起 db）
+cd web && npx vue-tsc --noEmit                           # 前端类型检查
+```
+
+## 🤝 贡献 / 许可
+
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md) · 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 用 Claude Code 继续开发？仓库根的 [`CLAUDE.md`](CLAUDE.md) 是给 AI 的项目向导，换设备克隆后会自动加载。
+- 许可：[Apache-2.0](LICENSE)

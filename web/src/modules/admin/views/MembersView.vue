@@ -91,6 +91,9 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { listMembers, setMemberDisabled, updateMember, type Member } from "../api/admin";
+import { useNotification } from "@/shell/notify";
+
+const notify = useNotification();
 
 const members = ref<Member[]>([]);
 const search = ref("");
@@ -125,7 +128,7 @@ async function save() {
     editing.value = null;
     await reload();
   } catch (e: any) {
-    alert(e.response?.data?.error?.message ?? "保存失败");
+    notify.error(e.response?.data?.error?.message ?? "保存失败");
   } finally { saving.value = false; }
 }
 

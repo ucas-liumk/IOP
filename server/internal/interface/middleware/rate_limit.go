@@ -24,6 +24,12 @@ func DefaultRateLimit() RateLimitConfig {
 	return RateLimitConfig{TenantPerMin: 1000, UserPerMin: 60, IPPerMin: 20}
 }
 
+// DevRateLimit is roomier so a single developer machine (one IP) and E2E suites
+// don't trip the anonymous-IP throttle while hammering /auth/login etc.
+func DevRateLimit() RateLimitConfig {
+	return RateLimitConfig{TenantPerMin: 10000, UserPerMin: 600, IPPerMin: 600}
+}
+
 // RateLimit returns a Gin middleware that enforces sliding-window counters via Redis.
 // If rdb is nil OR Redis errors, it degrades to an in-memory counter (logs nothing here;
 // caller sees 429 response).

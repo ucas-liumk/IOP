@@ -47,6 +47,7 @@ export async function getPermissionRegistry(): Promise<PermissionRegistry> {
 // Modules that need different routing can override via manifest.config later.
 const ROUTE_BY_CODE: Record<string, string> = {
   okr: "/okr/plans",
+  tasks: "/tasks",
   approval: "/approval",
   crm: "/crm",
 };

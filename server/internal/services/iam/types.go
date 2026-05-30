@@ -8,13 +8,17 @@ import (
 
 // PlatformUser is the global cross-tenant identity.
 type PlatformUser struct {
-	ID           kernel.ID  `json:"id"`
-	Email        string     `json:"email"`
-	PasswordHash string     `json:"-"`
-	MFASecret    string     `json:"-"`
-	Status       string     `json:"status"`
-	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID                 kernel.ID  `json:"id"`
+	Username           string     `json:"username,omitempty"`
+	Phone              string     `json:"phone,omitempty"`
+	Email              string     `json:"email,omitempty"`
+	PasswordHash       string     `json:"-"`
+	MFASecret          string     `json:"-"`
+	Status             string     `json:"status"`
+	PasswordMustChange bool       `json:"password_must_change"`
+	IsPlatformAdmin    bool       `json:"is_platform_admin"`
+	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // Session represents one login.
@@ -55,10 +59,10 @@ type RoleGrant struct {
 
 // TokenPair returned by Login / Refresh.
 type TokenPair struct {
-	AccessToken       string    `json:"access_token"`
-	RefreshToken      string    `json:"refresh_token"`
-	AccessExpiresAt   time.Time `json:"access_expires_at"`
-	RefreshExpiresAt  time.Time `json:"refresh_expires_at"`
+	AccessToken      string    `json:"access_token"`
+	RefreshToken     string    `json:"refresh_token"`
+	AccessExpiresAt  time.Time `json:"access_expires_at"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
 }
 
 // Claims that go inside JWT.

@@ -31,8 +31,10 @@
         <TenantSwitcher />
       </div>
       <div class="nav-user" v-if="auth.loggedIn">
-        <div class="avatar">{{ initials }}</div>
-        <span class="user-email">{{ auth.user?.email }}</span>
+        <router-link to="/me/profile" class="user-link" title="个人中心">
+          <div class="avatar">{{ initials }}</div>
+          <span class="user-email">{{ displayName }}</span>
+        </router-link>
         <button class="btn-ghost-icon" @click="logout" title="退出">⏻</button>
       </div>
     </div>
@@ -48,9 +50,12 @@ import TenantSwitcher from "@/shell/tenant/TenantSwitcher.vue";
 const auth = useAuthStore();
 const router = useRouter();
 
+const displayName = computed(() => {
+  const u = auth.user;
+  return u?.username || u?.email || u?.phone || "未登录";
+});
 const initials = computed(() => {
-  const e = auth.user?.email ?? "?";
-  return e.slice(0, 2).toUpperCase();
+  return displayName.value.slice(0, 2).toUpperCase();
 });
 
 async function logout() {
@@ -103,6 +108,17 @@ async function logout() {
   font-size: 13px;
   color: var(--text-2);
   font-weight: 500;
+}
+.user-link {
+  display: flex; align-items: center; gap: var(--sp-2);
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  transition: background 0.15s;
+}
+.user-link:hover {
+  background: var(--surface-2);
+  text-decoration: none;
 }
 .btn-ghost-icon {
   background: transparent;

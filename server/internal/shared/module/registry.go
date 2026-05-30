@@ -5,7 +5,32 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/leo/iop/server/internal/interface/apiresp"
+	"github.com/leo/iop/server/internal/shared/errors"
+	"github.com/leo/iop/server/internal/shared/kernel"
 )
+
+// appEnabledGate returns 403 unless the caller's tenant has enabled the app.
+func appEnabledGate(check AppEnabledFunc, code string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tid, ok := kernel.TenantIDFromContext(c.Request.Context())
+		if !ok || tid == "" {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "app.no_tenant", "请先选择租户"))
+			return
+		}
+		enabled, err := check(c.Request.Context(), tid, code)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if !enabled {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "app.not_enabled", "应用未在本租户启用"))
+			return
+		}
+		c.Next()
+	}
+}
 
 // Registry collects modules at boot, mounts their routes, and exposes manifests.
 // Goroutine-safe so cmd/tenantctl and cmd/server can both build a registry.
@@ -69,10 +94,17 @@ func (r *Registry) AllPermissions() []Permission {
 // MountAll wires every module's routes under /api/apps/<code>/.
 // Caller passes an *already-authenticated* gin.RouterGroup so each module's
 // routes inherit the platform auth + tenant-loader middleware chain.
+//
+// When deps.AppEnabled is set, each module group is gated by an enablement check:
+// if the caller's tenant has not enabled the app (AppStore), requests get 403.
+// This makes "disable app" a real access boundary, not just a UI toggle.
 func (r *Registry) MountAll(api *gin.RouterGroup, deps Deps) {
 	for _, m := range r.All() {
-		manifest := m.Manifest()
-		group := api.Group("/apps/" + manifest.Code)
+		code := m.Manifest().Code
+		group := api.Group("/apps/" + code)
+		if deps.AppEnabled != nil {
+			group.Use(appEnabledGate(deps.AppEnabled, code))
+		}
 		m.RegisterRoutes(group, deps)
 	}
 }
