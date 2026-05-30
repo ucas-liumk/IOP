@@ -99,6 +99,7 @@ const router = createRouter({
             { path: "organizations", name: "platform.organizations", component: () => import("@/modules/admin/views/PlatformTenantsView.vue") },
             { path: "users",         name: "platform.users",         component: () => import("@/modules/admin/views/UsersView.vue") },
             { path: "registrations", name: "platform.registrations", component: () => import("@/modules/admin/views/RegistrationsView.vue"), props: { scope: "platform" } },
+            { path: "rbac", name: "platform.rbac", component: () => import("@/modules/platform/views/RbacView.vue") },
           ],
         },
 
