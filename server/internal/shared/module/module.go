@@ -40,6 +40,25 @@ type Manifest struct {
 	Version     string       `json:"version"`     // "1.0.0"
 	Permissions []Permission `json:"permissions"` // RBAC resource×action declarations
 	Events      []string     `json:"events"`      // event topics this module publishes
+	Menus       []MenuNode   `json:"menus"`       // console nav nodes this module contributes
+}
+
+// MenuNode is one node in a console's navigation/permission catalog. Modules
+// declare them in their Manifest; the platform aggregates them (plus built-in
+// console menus) into a tree. A node is VISIBLE to a user when: Console matches
+// the current console; AND (Perm == "" OR the user's role policies permit the
+// split "resource:action"); AND (App == "" OR that app is enabled for the tenant).
+type MenuNode struct {
+	Key     string `json:"key"`     // unique, e.g. "okr.plans"
+	Title   string `json:"title"`   // "我的计划"
+	Icon    string `json:"icon"`    // SVG path data
+	Path    string `json:"path"`    // frontend route, e.g. "/okr/plans" (dir nodes may be empty)
+	Parent  string `json:"parent"`  // parent node Key; "" = top level
+	Type    string `json:"type"`    // "dir" | "menu" | "button"
+	Console string `json:"console"` // "platform" | "tenant" | "both"
+	App     string `json:"app"`     // owning module code (gated by AppEnabled); "" for built-in
+	Perm    string `json:"perm"`    // required permission "resource:action"; "" = login/App only
+	Order   int    `json:"order"`
 }
 
 // Permission is one (resource, action) tuple a module exposes to RBAC.

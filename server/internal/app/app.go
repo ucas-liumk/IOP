@@ -314,6 +314,11 @@ func (a *App) Engine() *gin.Engine {
 	authOnly := api.Group("")
 	authOnly.Use(iam.JWTAuth(a.IAM))
 	iam.RegisterMeRoutes(authOnly, a.IAM)
+	// Effective menu tree + flat perms for the current user. On authOnly (no
+	// TenantLoader) so a platform-only user with no tenant context can still load
+	// platform menus; tenant console reads tenant context from claims when present
+	// (and returns an empty tree when absent rather than erroring).
+	a.RegisterMeMenuRoutes(authOnly)
 	// /me/apps needs tenant context; mount under authT (after TenantLoader)
 	appstore.RegisterMeRoutes(authT, a.AppStore)
 
@@ -329,6 +334,8 @@ func (a *App) Engine() *gin.Engine {
 	}, []string{"plan_level", "report_type"})
 	appstore.RegisterAdminRoutes(admin, a.AppStore)
 	module.RegisterAdminRoutes(admin, a.Modules)
+	// Complete tenant-console menu catalog (unfiltered) for the role editor.
+	a.RegisterTenantMenuCatalogRoute(admin)
 
 	// === Platform console (/platform/*, /tenants) === GLOBAL, tenant-LESS.
 	// Gated by the global is_platform_admin flag (PlatformAdminRequired). Mounted
@@ -342,6 +349,8 @@ func (a *App) Engine() *gin.Engine {
 	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool)
 	iam.RegisterPlatformRBACRoutes(platform, a.IAM, a.Audit)
 	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
+	// Complete platform-console menu catalog (unfiltered) for the role editor.
+	a.RegisterPlatformMenuCatalogRoute(platform)
 
 	return r
 }

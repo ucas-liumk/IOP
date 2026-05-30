@@ -91,6 +91,18 @@ func (r *Registry) AllPermissions() []Permission {
 	return out
 }
 
+// AllMenus aggregates every MenuNode declared by every module.
+// Returns a flat list (built-in console menus are added separately by the app
+// layer). Used to assemble the console menu catalog / nav trees.
+func (r *Registry) AllMenus() []MenuNode {
+	mods := r.All()
+	out := []MenuNode{}
+	for _, m := range mods {
+		out = append(out, m.Manifest().Menus...)
+	}
+	return out
+}
+
 // MountAll wires every module's routes under /api/apps/<code>/.
 // Caller passes an *already-authenticated* gin.RouterGroup so each module's
 // routes inherit the platform auth + tenant-loader middleware chain.

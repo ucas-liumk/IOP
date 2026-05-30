@@ -2,6 +2,21 @@
 import { client } from "@/api/client";
 
 export interface Permission { resource: string; action: string; label: string }
+// MenuNode mirrors server/internal/shared/module.MenuNode — one console nav node.
+// Frontend consumption (dynamic nav, role editor tree) is wired in a later layer;
+// this is typing only.
+export interface MenuNode {
+  key: string;
+  title: string;
+  icon: string;     // SVG path data
+  path: string;     // frontend route ("" for dir nodes)
+  parent: string;   // parent key ("" = top level)
+  type: string;     // "dir" | "menu" | "button"
+  console: string;  // "platform" | "tenant" | "both"
+  app: string;      // owning module code ("" for built-in)
+  perm: string;     // "resource:action" ("" = login/App only)
+  order: number;
+}
 export interface Manifest {
   code: string;
   name: string;
@@ -12,6 +27,7 @@ export interface Manifest {
   version: string;
   permissions: Permission[];
   events: string[];
+  menus?: MenuNode[];
 }
 export interface CatalogEntry extends Manifest { installed: boolean }
 

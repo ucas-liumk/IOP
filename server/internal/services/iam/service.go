@@ -376,6 +376,49 @@ func matchPolicy(pattern, value string) bool {
 	return false
 }
 
+// PermitsRule reports whether the given set of effective policy rules permits
+// (resource, action). It mirrors Enforce's match (wildcard-aware, effect=allow)
+// but operates IN MEMORY on rules already fetched — so callers can pull a user's
+// rules ONCE and test many resource:action pairs (e.g. filtering a menu tree)
+// without per-check DB round trips.
+func PermitsRule(rules []PolicyRule, resource, action string) bool {
+	for _, p := range rules {
+		if p.Effect == "allow" && matchPolicy(p.Resource, resource) && matchPolicy(p.Action, action) {
+			return true
+		}
+	}
+	return false
+}
+
+// MemberPerms returns the member's effective policy rules for the tenant
+// (ListMemberRoles → ListPolicyForRoles), de-referenced to values. Fetch once,
+// then test many resource:action pairs with PermitsRule. Returns an empty slice
+// (no error) when the member has no roles.
+func (s *Service) MemberPerms(ctx context.Context, memberID, tenantID kernel.ID) ([]PolicyRule, error) {
+	roles, err := s.repo.ListMemberRoles(ctx, memberID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if len(roles) == 0 {
+		return []PolicyRule{}, nil
+	}
+	ids := make([]kernel.ID, len(roles))
+	for i, r := range roles {
+		ids[i] = r.ID
+	}
+	pols, err := s.repo.ListPolicyForRoles(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PolicyRule, 0, len(pols))
+	for _, p := range pols {
+		if p != nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
 // GrantRoleByCode grants a role (by code) to a member.
 func (s *Service) GrantRoleByCode(ctx context.Context, memberID, tenantID kernel.ID, roleCode string) error {
 	role, err := s.repo.GetRoleByCode(ctx, roleCode, nil)

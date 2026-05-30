@@ -138,6 +138,36 @@ func (s *Service) PlatformPermissionsForUser(ctx context.Context, userID kernel.
 	return out, nil
 }
 
+// PlatformPolicies returns the user's effective platform policy rules
+// (ListPlatformRolesForUser → ListPolicyForRoles), de-referenced to values, for
+// in-memory menu filtering via PermitsRule. The built-in super_admin role carries
+// an all-access '*'/'*' policy (seeded), so a super admin's rules trivially permit
+// everything. Returns an empty slice (no error) when the user has no platform role.
+func (s *Service) PlatformPolicies(ctx context.Context, platformUserID kernel.ID) ([]PolicyRule, error) {
+	roles, err := s.repo.ListPlatformRolesForUser(ctx, platformUserID)
+	if err != nil {
+		return nil, err
+	}
+	if len(roles) == 0 {
+		return []PolicyRule{}, nil
+	}
+	roleIDs := make([]kernel.ID, 0, len(roles))
+	for _, r := range roles {
+		roleIDs = append(roleIDs, r.ID)
+	}
+	pols, err := s.repo.ListPolicyForRoles(ctx, roleIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PolicyRule, 0, len(pols))
+	for _, p := range pols {
+		if p != nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
 // UserHasPlatformRole reports whether the user holds a specific platform role by code.
 func (s *Service) UserHasPlatformRole(ctx context.Context, userID kernel.ID, code string) bool {
 	roles, err := s.repo.ListPlatformRolesForUser(ctx, userID)
