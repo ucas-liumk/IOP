@@ -44,6 +44,7 @@ type Repository interface {
 	ListPlatformRolesForUser(ctx context.Context, platformUserID kernel.ID) ([]*Role, error)
 	ListPlatformRoles(ctx context.Context) ([]*Role, error)
 	GetPlatformRoleByCode(ctx context.Context, code string) (*Role, error)
+	GetPlatformRoleByID(ctx context.Context, id kernel.ID) (*Role, error)
 	CreatePlatformRole(ctx context.Context, id kernel.ID, code, name string) error
 	DeletePlatformRole(ctx context.Context, id kernel.ID) error
 	AddPlatformPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error
@@ -389,6 +390,21 @@ func (r *pgRepo) ListPlatformRoles(ctx context.Context) ([]*Role, error) {
 // GetPlatformRoleByCode returns a platform role by code, or (nil, nil) if absent.
 func (r *pgRepo) GetPlatformRoleByCode(ctx context.Context, code string) (*Role, error) {
 	return r.GetRoleByCode(ctx, code, nil)
+}
+
+// GetPlatformRoleByID returns a platform role by ID, or (nil, nil) if absent.
+func (r *pgRepo) GetPlatformRoleByID(ctx context.Context, id kernel.ID) (*Role, error) {
+	var role Role
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, tenant_id, code, name, created_at FROM public.role WHERE id = $1 AND tenant_id IS NULL`, id).
+		Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &role, nil
 }
 
 // CreatePlatformRole inserts a custom platform role (tenant_id NULL).

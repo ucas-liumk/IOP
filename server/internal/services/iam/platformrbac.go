@@ -194,6 +194,119 @@ func (s *Service) IsHighRiskPermission(resource, action string) bool {
 	return highRiskSet[[2]string{resource, action}]
 }
 
+// catalogSet provides O(1) membership tests against the platform permission catalog.
+var catalogSet = func() map[[2]string]bool {
+	m := map[[2]string]bool{}
+	for _, p := range platformCatalog {
+		m[[2]string{p.Resource, p.Action}] = true
+	}
+	return m
+}()
+
+// IsCatalogPermission reports whether (resource, action) is a known catalog point.
+func (s *Service) IsCatalogPermission(resource, action string) bool {
+	return catalogSet[[2]string{resource, action}]
+}
+
+// AddPlatformPolicy validates the point against the catalog before persisting,
+// preventing injection of arbitrary/wildcard policies via the API.
+func (s *Service) AddPlatformPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error {
+	if !s.IsCatalogPermission(resource, action) {
+		return errors.New(errors.KindParam, "iam.unknown_permission", "未知权限点,不在目录内")
+	}
+	return s.repo.AddPlatformPolicy(ctx, roleID, resource, action)
+}
+
+// RoleWithPolicies is a platform role plus its policy rules (for the admin UI).
+type RoleWithPolicies struct {
+	*Role
+	BuiltIn  bool          `json:"built_in"`
+	Policies []*PolicyRule `json:"policies"`
+	Members  []kernel.ID   `json:"members"`
+}
+
+var builtinPlatformRoleCodes = map[string]bool{
+	"super_admin": true, "sys_admin": true, "sec_admin": true, "audit_admin": true,
+}
+
+// CreatePlatformRole creates a new custom platform role.
+func (s *Service) CreatePlatformRole(ctx context.Context, code, name string) error {
+	return s.repo.CreatePlatformRole(ctx, kernel.NewID(), code, name)
+}
+
+// DeletePlatformRole deletes a platform role by ID, rejecting built-in roles.
+func (s *Service) DeletePlatformRole(ctx context.Context, id kernel.ID) error {
+	role, err := s.repo.GetPlatformRoleByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if role == nil {
+		return errors.New(errors.KindNotFound, "iam.role_not_found", "平台角色不存在")
+	}
+	if builtinPlatformRoleCodes[role.Code] {
+		return errors.New(errors.KindForbidden, "iam.builtin_role_undeletable", "内置角色不可删除")
+	}
+	return s.repo.DeletePlatformRole(ctx, id)
+}
+
+// ListPlatformRolesWithPolicies returns all platform roles with their policies and members.
+func (s *Service) ListPlatformRolesWithPolicies(ctx context.Context) ([]*RoleWithPolicies, error) {
+	roles, err := s.repo.ListPlatformRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*RoleWithPolicies, 0, len(roles))
+	for _, role := range roles {
+		pols, _ := s.repo.ListPolicyForRoles(ctx, []kernel.ID{role.ID})
+		members, _ := s.repo.ListPlatformRoleMembers(ctx, role.ID)
+		out = append(out, &RoleWithPolicies{
+			Role: role, BuiltIn: builtinPlatformRoleCodes[role.Code], Policies: pols, Members: members,
+		})
+	}
+	return out, nil
+}
+
+// PlatformPermissionsForUser returns the flat set of "resource/action" the user holds
+// (or ["*/*"] for super_admin), for front-end gating.
+func (s *Service) PlatformPermissionsForUser(ctx context.Context, userID kernel.ID) ([]string, error) {
+	roles, err := s.repo.ListPlatformRolesForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	roleIDs := make([]kernel.ID, 0, len(roles))
+	for _, r := range roles {
+		if r.Code == "super_admin" {
+			return []string{"*/*"}, nil
+		}
+		roleIDs = append(roleIDs, r.ID)
+	}
+	pols, err := s.repo.ListPolicyForRoles(ctx, roleIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, p := range pols {
+		if p.Effect == "allow" {
+			out = append(out, p.Resource+"/"+p.Action)
+		}
+	}
+	return out, nil
+}
+
+// UserHasPlatformRole reports whether the user holds a specific platform role by code.
+func (s *Service) UserHasPlatformRole(ctx context.Context, userID kernel.ID, code string) bool {
+	roles, err := s.repo.ListPlatformRolesForUser(ctx, userID)
+	if err != nil {
+		return false
+	}
+	for _, r := range roles {
+		if r.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 // SeedPlatformRBAC upserts the permission catalog and ensures the built-in 三员 roles
 // carry their default policies. Idempotent; safe to run on every boot.
 func (s *Service) SeedPlatformRBAC(ctx context.Context) error {

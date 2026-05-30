@@ -338,8 +338,9 @@ func (a *App) Engine() *gin.Engine {
 	platform := api.Group("")
 	platform.Use(iam.JWTAuth(a.IAM))
 	platform.Use(iam.PasswordChangeGate(a.IAM))
-	platform.Use(iam.PlatformAdminRequired(a.IAM))
+	platform.Use(iam.PlatformAccess(a.IAM))
 	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool)
+	iam.RegisterPlatformRBACRoutes(platform, a.IAM, a.Audit)
 	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
 
 	return r

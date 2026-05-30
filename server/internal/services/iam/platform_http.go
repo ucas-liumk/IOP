@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/leo/iop/server/internal/services/audit"
 	"github.com/leo/iop/server/internal/interface/apiresp"
+	"github.com/leo/iop/server/internal/services/audit"
 	"github.com/leo/iop/server/internal/shared/errors"
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
@@ -76,4 +76,199 @@ func PlatformAuthz(svc *Service, aud *audit.Service, resource, action string) gi
 			})
 		}
 	}
+}
+
+// RegisterPlatformRBACRoutes mounts /platform/rbac/* on the platform group.
+func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Service) {
+	// Current user's platform roles + permissions (front-end gating). Login-only.
+	r.GET("/platform/rbac/me", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		ctx := c.Request.Context()
+		roles, _ := svc.repo.ListPlatformRolesForUser(ctx, claims.PlatformUserID)
+		codes := []string{}
+		isSuper := false
+		for _, role := range roles {
+			codes = append(codes, role.Code)
+			if role.Code == "super_admin" {
+				isSuper = true
+			}
+		}
+		perms, _ := svc.PlatformPermissionsForUser(ctx, claims.PlatformUserID)
+		apiresp.OK(c, gin.H{
+			"roles": codes, "permissions": perms, "is_super_admin": isSuper,
+			"governance_mode": svc.GovernanceMode(ctx),
+		})
+	})
+
+	r.GET("/platform/rbac/permissions", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		perms, err := svc.repo.ListPlatformPermissions(c.Request.Context())
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"permissions": perms})
+	})
+
+	r.GET("/platform/rbac/roles", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		roles, err := svc.ListPlatformRolesWithPolicies(c.Request.Context())
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"roles": roles})
+	})
+
+	r.POST("/platform/rbac/roles", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		var req struct {
+			Code string `json:"code" binding:"required"`
+			Name string `json:"name" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.CreatePlatformRole(c.Request.Context(), req.Code, req.Name); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.DELETE("/platform/rbac/roles/:id", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		if err := svc.DeletePlatformRole(c.Request.Context(), id); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/rbac/roles/:id/policies", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		var req struct {
+			Resource string `json:"resource" binding:"required"`
+			Action   string `json:"action" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.AddPlatformPolicy(c.Request.Context(), id, req.Resource, req.Action); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.DELETE("/platform/rbac/roles/:id/policies", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		resource := c.Query("resource")
+		action := c.Query("action")
+		if resource == "" || action == "" {
+			apiresp.Fail(c, errors.New(errors.KindParam, "iam.invalid_request", "resource 和 action 必填"))
+			return
+		}
+		if err := svc.repo.RemovePlatformPolicy(c.Request.Context(), id, resource, action); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/rbac/roles/:id/members", PlatformAuthz(svc, aud, "authz", "grant"), func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		var req struct {
+			PlatformUserID string `json:"platform_user_id" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		uid, err := kernel.ParseID(req.PlatformUserID)
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "platform_user_id 无效", err))
+			return
+		}
+		role, err := svc.repo.GetPlatformRoleByID(c.Request.Context(), id)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if role == nil {
+			apiresp.Fail(c, errors.New(errors.KindNotFound, "iam.role_not_found", "平台角色不存在"))
+			return
+		}
+		if role.Code == "super_admin" && !svc.UserHasPlatformRole(c.Request.Context(), claims.PlatformUserID, "super_admin") {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.super_grant_forbidden", "仅超级管理员可授予 super_admin 角色"))
+			return
+		}
+		if err := svc.repo.GrantPlatformRole(c.Request.Context(), id, uid, claims.PlatformUserID); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.DELETE("/platform/rbac/roles/:id/members/:uid", PlatformAuthz(svc, aud, "authz", "grant"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		uid, err := kernel.ParseID(c.Param("uid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "uid 无效", err))
+			return
+		}
+		if err := svc.repo.RevokePlatformRole(c.Request.Context(), id, uid); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.GET("/platform/rbac/governance-mode", func(c *gin.Context) {
+		apiresp.OK(c, gin.H{"mode": svc.GovernanceMode(c.Request.Context())})
+	})
+
+	r.PUT("/platform/rbac/governance-mode", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
+		if !svc.UserHasPlatformRole(c.Request.Context(), claims.PlatformUserID, "super_admin") {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.super_admin_only", "仅超级管理员可切换治理模式"))
+			return
+		}
+		var req struct {
+			Mode string `json:"mode" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.SetGovernanceMode(c.Request.Context(), req.Mode, claims.PlatformUserID); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		aud.RecordPlatform(c.Request.Context(), audit.PlatformEntry{
+			Actor: string(claims.PlatformUserID), Action: "governance/switch",
+			Resource: "governance", ResourceID: req.Mode, GovernanceMode: req.Mode,
+		})
+		apiresp.OK(c, gin.H{"ok": true})
+	})
 }
