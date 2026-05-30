@@ -432,3 +432,25 @@ func (s *Service) GrantRoleByCode(ctx context.Context, memberID, tenantID kernel
 		RoleID: role.ID, MemberID: memberID, TenantID: tenantID, GrantedAt: s.clock.Now(),
 	})
 }
+
+// GrantRoleByID grants a role (by id) to a member of the given tenant. The role
+// must be visible in that tenant — either a platform-wide built-in (tenant_id IS
+// NULL) or one owned by this tenant — so a platform admin acting on org :tid can
+// only grant roles that legitimately belong to it. The (role,member,tenant) grant
+// is idempotent.
+func (s *Service) GrantRoleByID(ctx context.Context, memberID, tenantID, roleID kernel.ID) error {
+	pool := s.repo.(*pgRepo).pool
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM public.role
+		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2))`,
+		roleID, tenantID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New(errors.KindNotFound, "iam.role_not_found", "角色不存在")
+	}
+	return s.repo.GrantRole(ctx, &RoleGrant{
+		RoleID: roleID, MemberID: memberID, TenantID: tenantID, GrantedAt: s.clock.Now(),
+	})
+}

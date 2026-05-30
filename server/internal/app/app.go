@@ -370,6 +370,14 @@ func (a *App) Engine() *gin.Engine {
 		return iam.PlatformAuthz(a.IAM, a.Audit, resource, action)
 	}
 	tenancy.RegisterPlatformOrgRoutes(platform, a.Tenancy, a.Pool, platformAuthz)
+	// Platform-side org governance: manage ANY organization's MEMBERS (+ that org's
+	// posts/roles pickers) by passing the org's tenant id
+	// (/platform/orgs/:tid/members*). Reuses the tenant console's member service
+	// funcs (tenancy: members/posts; iam: import/roles); gated per-route with the
+	// platform RBAC policy (user:read / user:write). Lives in iam (not tenancy)
+	// because member management spans both services and iam already imports
+	// tenancy — registering here keeps the wiring acyclic.
+	iam.RegisterPlatformOrgMemberRoutes(platform, a.IAM, a.Audit, a.Pool)
 	// Complete platform-console menu catalog (unfiltered) for the role editor.
 	a.RegisterPlatformMenuCatalogRoute(platform)
 
