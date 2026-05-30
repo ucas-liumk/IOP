@@ -1,64 +1,83 @@
 <template>
   <section class="admin-page">
-    <PageHeader title="全局用户" :sub="`平台用户 · 共 ${total} 个${search ? ' · 搜索: ' + search : ''}`">
+    <PageHeader title="用户管理" :sub="`左选组织，右管其成员（按部门树筛选 / 导入导出 / 角色岗位） · 平台共 ${tenants.length} 家组织`">
       <template #actions>
         <div class="head-actions">
-          <input class="input search" v-model="search" placeholder="搜索用户名 / 手机 / 邮箱" @keyup.enter="search1" />
-          <button class="btn btn-ghost" @click="search1">搜索</button>
-          <button class="btn btn-ghost" @click="refresh">刷新</button>
-          <button class="btn btn-ghost" @click="exportCsv">导出</button>
+          <button class="btn btn-ghost" @click="reload">刷新</button>
           <button class="btn btn-primary" v-perm="'user:write'" @click="openCreate">+ 新建用户</button>
         </div>
       </template>
     </PageHeader>
 
-    <div v-if="pageError" class="page-error">
-      {{ pageError }}
-      <button class="page-error-close" @click="pageError = ''">×</button>
+    <div v-if="actionError && !creating" class="page-error">
+      {{ actionError }}
+      <button class="page-error-close" @click="actionError = ''">×</button>
     </div>
 
-    <DataTable :columns="columns" :rows="users" rowKey="id" :loading="loading">
-      <template #cell-account="{ row }">
-        <div class="user-cell">
-          <div class="u-avatar">{{ initialsOf(row) }}</div>
-          <div>
-            <div class="u-name">
-              <code>{{ row.username || '—' }}</code>
-              <span v-if="row.status === 'disabled'" class="tag-disabled">已停用</span>
-            </div>
-            <div class="u-meta">
-              <span v-if="row.phone">📱 {{ row.phone }}</span>
-              <span v-if="row.email">✉️ {{ row.email }}</span>
-              <span v-if="!row.phone && !row.email" class="muted">无联系方式</span>
-            </div>
-          </div>
+    <div class="two-pane">
+      <!-- LEFT: organization (tenant) list -->
+      <aside class="org-pane card">
+        <div class="org-pane-head">
+          <span class="org-pane-title">组织机构</span>
+          <span class="org-count">{{ tenants.length }}</span>
         </div>
-      </template>
-      <template #cell-created_at="{ row }">
-        <span class="time">{{ formatTime(row.created_at) }}</span>
-      </template>
-      <template #cell-last_login_at="{ row }">
-        <span v-if="row.last_login_at" class="time">{{ formatTime(row.last_login_at) }}</span>
-        <span v-else class="muted">从未登录</span>
-      </template>
-      <template #cell-actions="{ row }">
-        <div class="row-actions">
-          <button class="btn btn-ghost btn-sm" v-perm="'user:write'" @click="openReset(row)">重置密码</button>
-          <button v-if="row.status === 'active'" v-perm="'user:write'" class="btn btn-ghost btn-sm danger" @click="toggleStatus(row)">停用</button>
-          <button v-else v-perm="'user:write'" class="btn btn-ghost btn-sm" @click="toggleStatus(row)">启用</button>
+        <div class="org-search">
+          <input class="input search-sm" v-model="orgFilter" placeholder="搜索组织" />
         </div>
-      </template>
-    </DataTable>
 
-    <Pagination
-      v-model:page="page"
-      v-model:page-size="pageSize"
-      :total="total"
-      @update:page="refresh"
-      @update:page-size="refresh"
-    />
+        <div v-if="filteredTenants.length === 0 && !loading" class="org-empty">
+          <EmptyState title="无匹配组织" sub="调整搜索或新建组织" icon="◫" />
+        </div>
 
-    <!-- Create modal -->
+        <ul v-else class="org-list">
+          <li
+            v-for="t in filteredTenants"
+            :key="t.id"
+            class="org-row"
+            :class="{ selected: t.id === selectedOrgId }"
+            @click="selectOrg(t)"
+          >
+            <div class="t-logo" :style="{ background: colorFor(t.name) }">{{ t.name[0] }}</div>
+            <div class="t-main">
+              <div class="t-name">{{ t.name }}</div>
+              <div class="t-meta">
+                <code>{{ t.slug }}</code>
+                <span class="status-tag" :class="`status-${t.status}`">
+                  <span class="dot"></span>{{ statusLabel(t.status) }}
+                </span>
+              </div>
+            </div>
+          </li>
+        </ul>
+      </aside>
+
+      <!-- RIGHT: member manager for the selected org -->
+      <div class="member-pane">
+        <EmptyState
+          v-if="!selectedOrg"
+          title="选择左侧组织以管理其成员"
+          sub="点击左侧任一组织，在此按部门树筛选、导入导出、分配角色 / 岗位 / 部门"
+          icon="◫"
+        />
+        <MemberManager
+          v-else
+          :key="selectedOrg.id"
+          :api="orgApi!"
+          :template-url="orgMemberTemplateUrl(selectedOrg.id)"
+          :import-url="orgMemberImportUrl(selectedOrg.id)"
+          write-perm="user:write"
+        >
+          <template #head-left>
+            <div class="org-banner">
+              <span class="org-banner-name">{{ selectedOrg.name }}</span>
+              <span class="org-banner-slug">schema: <code class="mono">{{ selectedOrg.schema_name }}</code></span>
+            </div>
+          </template>
+        </MemberManager>
+      </div>
+    </div>
+
+    <!-- Create platform user modal -->
     <div v-if="creating" class="modal-overlay" @click.self="closeCreate">
       <div class="modal">
         <h3>新建平台用户</h3>
@@ -82,7 +101,7 @@
           <span class="label">所属单位</span>
           <select class="input" v-model="form.organization_id" required>
             <option value="" disabled>请选择</option>
-            <option v-for="o in orgs" :key="o.id" :value="o.id">{{ o.name }}</option>
+            <option v-for="o in tenants" :key="o.id" :value="o.id">{{ o.name }}</option>
           </select>
         </label>
         <label class="field">
@@ -107,124 +126,53 @@
         </div>
       </div>
     </div>
-
-    <!-- Reset password modal -->
-    <div v-if="resetting" class="modal-overlay" @click.self="closeReset">
-      <div class="modal">
-        <h3>重置 {{ resetting.username }} 的密码</h3>
-
-        <template v-if="!resetDone">
-          <label class="field">
-            <span class="label">新密码</span>
-            <input class="input" v-model="newPassword" type="text" minlength="10"
-                   placeholder="至少 10 位，含字母与数字" />
-            <button type="button" class="btn-link" @click="newPassword = randomPassword()">生成强密码</button>
-          </label>
-          <div v-if="actionError" class="form-error">{{ actionError }}</div>
-          <div class="modal-actions">
-            <button class="btn btn-ghost" @click="closeReset">取消</button>
-            <button class="btn btn-primary" :disabled="busy" @click="confirmReset">
-              {{ busy ? '处理中…' : '确认重置' }}
-            </button>
-          </div>
-        </template>
-
-        <template v-else>
-          <p class="modal-sub">密码已重置成功，请妥善记录并通知用户（关闭后将无法再次查看）。</p>
-          <div class="pw-reveal">
-            <code class="pw-text">{{ newPassword }}</code>
-            <button type="button" class="btn btn-ghost btn-sm" @click="copyNewPassword">复制</button>
-          </div>
-          <div class="modal-actions">
-            <button class="btn btn-primary" @click="closeReset">完成</button>
-          </div>
-        </template>
-      </div>
-    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { PageHeader, DataTable, Pagination, type Column } from "@/shell/components";
-import { useNotification } from "@/shell/notify";
-import { useConfirm } from "@/shell/confirm";
-
-const notify = useNotification();
-const { confirm } = useConfirm();
+import { computed, onMounted, reactive, ref } from "vue";
+import { PageHeader, EmptyState, MemberManager, type MemberApi } from "@/shell/components";
 import {
-  listPlatformUsersPaged, createPlatformUser,
-  disablePlatformUser, enablePlatformUser, resetPlatformUserPassword,
-  listAllTenants, type PlatformTenant,
-  type PlatformUser,
+  listAllTenants, createPlatformUser, type PlatformTenant,
 } from "../api/admin";
+import {
+  orgMemberApi, orgMemberTemplateUrl, orgMemberImportUrl,
+} from "@/modules/platform/api/orgs";
 
-const users = ref<PlatformUser[]>([]);
-const orgs = ref<PlatformTenant[]>([]);
-const search = ref("");
+const tenants = ref<PlatformTenant[]>([]);
+const orgFilter = ref("");
 const loading = ref(false);
 const busy = ref(false);
 const actionError = ref("");
-const pageError = ref(""); // row-level action errors (shown as a banner)
 
-// Server-side pagination state.
-const page = ref(1);
-const pageSize = ref(20);
-const total = ref(0);
+// Selected org → drives the right-hand member manager.
+const selectedOrgId = ref<string | null>(null);
+const selectedOrg = computed(() => tenants.value.find((t) => t.id === selectedOrgId.value) ?? null);
+// New adapter per selected org; <MemberManager :key> remounts on org change.
+const orgApi = computed<MemberApi | null>(() => (selectedOrg.value ? orgMemberApi(selectedOrg.value.id) : null));
 
-const columns: Column[] = [
-  { key: "account",       label: "账号",       width: 320 },
-  { key: "created_at",    label: "创建时间",   width: 160 },
-  { key: "last_login_at", label: "最近登录",   width: 160 },
-  { key: "actions",       label: "操作",       width: 220, align: "right" },
-];
+const filteredTenants = computed(() => {
+  const q = orgFilter.value.trim().toLowerCase();
+  if (!q) return tenants.value;
+  return tenants.value.filter((t) => t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q));
+});
 
-async function refresh() {
+function selectOrg(t: PlatformTenant) {
+  selectedOrgId.value = t.id;
+}
+
+onMounted(reload);
+async function reload() {
   loading.value = true;
   try {
-    const res = await listPlatformUsersPaged({
-      page: page.value,
-      pageSize: pageSize.value,
-      search: search.value.trim(),
-    });
-    users.value = res.data;
-    total.value = res.total;
+    tenants.value = await listAllTenants();
+    if (selectedOrgId.value && !tenants.value.some((t) => t.id === selectedOrgId.value)) {
+      selectedOrgId.value = null;
+    }
   } finally { loading.value = false; }
 }
 
-// Reset to page 1 on a new search so the server-side offset stays valid.
-function search1() {
-  page.value = 1;
-  refresh();
-}
-
-// Export the currently-loaded page as CSV. The platform-user endpoint has no
-// server-side export route, so this is a best-effort client-side dump (username
-// primary; email is optional and may be blank).
-function exportCsv() {
-  const header = ["username", "phone", "email", "status", "created_at", "last_login_at"];
-  const esc = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const lines = [header.join(",")];
-  for (const u of users.value) {
-    lines.push([u.username ?? "", u.phone ?? "", u.email ?? "", u.status, u.created_at, u.last_login_at ?? ""].map(esc).join(","));
-  }
-  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `platform-users-${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-onMounted(async () => {
-  try { orgs.value = await listAllTenants(); } catch {}
-  await refresh();
-});
-
-// === Create modal ===
+// === Create platform user modal ===
 const creating = ref(false);
 const form = reactive({
   username: "", real_name: "", phone: "",
@@ -237,7 +185,7 @@ function openCreate() {
   form.username = "";
   form.real_name = "";
   form.phone = "";
-  form.organization_id = orgs.value[0]?.id ?? "";
+  form.organization_id = selectedOrg.value?.id ?? tenants.value[0]?.id ?? "";
   form.role = "tenant_member";
   form.password = randomPassword();
   actionError.value = "";
@@ -250,103 +198,49 @@ async function confirmCreate() {
   try {
     await createPlatformUser({ ...form });
     creating.value = false;
-    await refresh();
+    // If the new user joined the currently-selected org, remount the manager to refresh.
+    if (form.organization_id === selectedOrgId.value) {
+      const cur = selectedOrgId.value;
+      selectedOrgId.value = null;
+      await nextTickReselect(cur);
+    }
   } catch (e: any) {
     actionError.value = e.response?.data?.error?.message ?? "创建失败";
   } finally { busy.value = false; }
 }
 
-// === Status toggle ===
-async function toggleStatus(u: PlatformUser) {
-  pageError.value = "";
-  try {
-    if (u.status === "active") {
-      if (!(await confirm({ title: "确认", message: `确认停用 ${u.username}？停用后该账号无法登录。`, danger: true }))) return;
-      await disablePlatformUser(u.id);
-    } else {
-      await enablePlatformUser(u.id);
-    }
-    await refresh();
-  } catch (e: any) {
-    pageError.value = e.response?.data?.error?.message ?? "操作失败";
-  }
+// Reselect on the next microtask so the keyed MemberManager fully remounts.
+async function nextTickReselect(id: string | null) {
+  await Promise.resolve();
+  selectedOrgId.value = id;
 }
 
-// === Reset password ===
-const resetting = ref<PlatformUser | null>(null);
-const newPassword = ref("");
-
-function openReset(u: PlatformUser) {
-  resetting.value = u;
-  newPassword.value = randomPassword();
-  resetDone.value = false;
-  actionError.value = "";
+function statusLabel(s: string) {
+  return ({ active: "运行中", suspended: "已暂停", closed: "已关闭" } as Record<string, string>)[s] ?? s;
 }
-
-const resetDone = ref(false); // keeps the new password visible after a reset
-
-async function confirmReset() {
-  if (!resetting.value) return;
-  busy.value = true; actionError.value = "";
-  try {
-    await resetPlatformUserPassword(resetting.value.id, newPassword.value);
-    // Keep the password visible (admin must relay it) and also surface a toast.
-    resetDone.value = true;
-    notify.success(`密码已重置为：${newPassword.value}（请妥善记录并通知用户）`, 8000);
-  } catch (e: any) {
-    actionError.value = e.response?.data?.error?.message ?? "重置失败";
-  } finally { busy.value = false; }
+function colorFor(name: string) {
+  const seed = (name || "?").split("").reduce((s, c) => s + c.charCodeAt(0), 0);
+  const palette = [
+    "linear-gradient(135deg,#1e5fd9,#4a85ee)",
+    "linear-gradient(135deg,#7c4ddb,#5a2db5)",
+    "linear-gradient(135deg,#0fa8a3,#0a7e7a)",
+    "linear-gradient(135deg,#e8920e,#b86d05)",
+    "linear-gradient(135deg,#1aa971,#0e7b51)",
+  ];
+  return palette[seed % palette.length];
 }
-
-async function copyNewPassword() {
-  try {
-    await navigator.clipboard.writeText(newPassword.value);
-    notify.success("已复制到剪贴板");
-  } catch {
-    notify.error("复制失败，请手动选择密码文本");
-  }
-}
-
-function closeReset() {
-  resetting.value = null;
-  resetDone.value = false;
-  newPassword.value = "";
-}
-
-// === Helpers ===
-function initialsOf(u: PlatformUser): string {
-  const s = u.username || u.email || u.phone || "?";
-  return s.slice(0, 2).toUpperCase();
-}
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const m = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${m(d.getMonth()+1)}-${m(d.getDate())} ${m(d.getHours())}:${m(d.getMinutes())}`;
-}
-// Cryptographically-strong password generator. Uses crypto.getRandomValues with
-// rejection sampling (no modulo bias) and a crypto Fisher-Yates shuffle — these are
-// real account credentials, so the non-crypto PRNG must not be used.
 function randPick(set: string): string {
-  const max = 256 - (256 % set.length); // reject the biased tail
+  const max = 256 - (256 % set.length);
   const buf = new Uint8Array(1);
-  for (;;) {
-    crypto.getRandomValues(buf);
-    if (buf[0] < max) return set[buf[0] % set.length];
-  }
+  for (;;) { crypto.getRandomValues(buf); if (buf[0] < max) return set[buf[0] % set.length]; }
 }
 function randomPassword(): string {
-  const letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ"; // no l/I/O/0 confusables
+  const letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ";
   const digits = "23456789";
   const symbols = "!@#$%";
   const all = letters + digits + symbols;
-  const chars: string[] = [
-    randPick(letters), // guarantee ≥1 letter
-    randPick(digits),  // guarantee ≥1 digit
-    randPick(symbols),
-  ];
-  for (let i = 0; i < 9; i++) chars.push(randPick(all)); // 12 chars total
-  // Fisher-Yates with crypto-drawn indices
+  const chars: string[] = [randPick(letters), randPick(digits), randPick(symbols)];
+  for (let i = 0; i < 9; i++) chars.push(randPick(all));
   for (let i = chars.length - 1; i > 0; i--) {
     const j = cryptoIndex(i + 1);
     [chars[i], chars[j]] = [chars[j], chars[i]];
@@ -356,124 +250,84 @@ function randomPassword(): string {
 function cryptoIndex(n: number): number {
   const max = 256 - (256 % n);
   const buf = new Uint8Array(1);
-  for (;;) {
-    crypto.getRandomValues(buf);
-    if (buf[0] < max) return buf[0] % n;
-  }
+  for (;;) { crypto.getRandomValues(buf); if (buf[0] < max) return buf[0] % n; }
 }
 </script>
 
 <style scoped>
 .admin-page { display: flex; flex-direction: column; gap: var(--sp-5); }
-.head-actions { display: flex; align-items: center; gap: 8px; }
+.head-actions { display: flex; gap: 8px; }
 .page-error {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--danger-soft); color: var(--danger);
   font-size: 13px; padding: 10px 14px; border-radius: 8px;
 }
-.page-error-close {
-  border: 0; background: transparent; color: inherit;
-  font-size: 18px; line-height: 1; cursor: pointer;
-}
-.search {
-  width: 240px;
-  font-size: 13px;
-  padding: 6px 10px;
-}
+.page-error-close { border: 0; background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
 
-.user-cell { display: flex; align-items: center; gap: 10px; }
-.u-avatar {
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary), #5b8bf5);
-  color: #fff;
-  display: grid; place-items: center;
-  font-size: 12px;
-  font-weight: 700;
-}
-.u-name {
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+
+/* two-pane shell: org list | member manager */
+.two-pane { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+
+/* LEFT pane */
+.org-pane { padding: 8px; display: flex; flex-direction: column; max-height: calc(100vh - 200px); }
+.org-pane-head {
   display: flex; align-items: center; gap: 8px;
-  font-size: 13.5px;
-  color: var(--text);
+  padding: 8px 10px 8px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .5px;
 }
-.u-name code {
-  background: var(--surface-2);
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-family: var(--ff-mono);
-  font-size: 12px;
+.org-count { margin-left: auto; background: var(--surface-2); color: var(--text-2); font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.org-search { padding: 0 6px 8px; }
+.org-search .search-sm { width: 100%; font-size: 13px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
+.org-search .search-sm:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.org-empty { padding: 8px 0; }
+.org-list { list-style: none; margin: 0; padding: 0; overflow: auto; }
+.org-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 9px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .12s, border-color .12s;
 }
-.u-meta {
-  font-size: 11.5px;
-  color: var(--text-3);
-  display: flex; gap: 10px;
-  margin-top: 2px;
-}
-.muted { color: var(--text-4); }
-.time { font-size: 12.5px; color: var(--text-2); font-family: var(--ff-mono); }
-.tag-disabled {
-  font-size: 10.5px;
-  background: var(--danger-soft);
-  color: var(--danger);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-weight: 600;
-}
-.row-actions { display: flex; gap: 4px; justify-content: flex-end; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-sm.danger { color: var(--danger); }
-.btn-sm.danger:hover { background: var(--danger-soft); }
-.btn-link {
-  border: 0;
-  background: none;
-  color: var(--primary);
-  font-size: 11.5px;
-  cursor: pointer;
-  text-align: left;
-  padding: 4px 0 0;
-}
+.org-row:hover { background: var(--surface-2); }
+.org-row.selected { background: var(--primary-soft); border-color: var(--primary); }
+.t-logo { width: 32px; height: 32px; border-radius: 7px; color: white; font-weight: 700; display: grid; place-items: center; font-size: 14px; flex-shrink: 0; }
+.t-main { flex: 1; min-width: 0; }
+.t-name { font-size: 13.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-meta { font-size: 11.5px; color: var(--text-3); margin-top: 3px; display: flex; gap: 8px; align-items: center; }
+code { background: var(--surface-2); padding: 1px 6px; border-radius: 3px; font-family: var(--ff-mono); font-size: 11px; }
+code.mono { color: var(--text-2); }
+.org-row.selected code { background: var(--surface); }
 
-.modal-overlay {
-  position: fixed; inset: 0;
-  background: rgba(13, 27, 46, .45);
-  display: grid; place-items: center; z-index: 100;
-  backdrop-filter: blur(3px);
-}
-.modal {
-  background: var(--surface);
-  border-radius: 14px;
-  padding: 22px;
-  width: min(440px, 92vw);
-  box-shadow: var(--sh-4);
-  display: flex; flex-direction: column; gap: 12px;
-}
+.status-tag { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.status-tag .dot { width: 5px; height: 5px; background: currentColor; border-radius: 50%; }
+.status-active { background: var(--success-soft); color: var(--success); }
+.status-suspended { background: var(--warning-soft); color: var(--warning); }
+.status-closed { background: var(--danger-soft); color: var(--danger); }
+
+/* RIGHT pane */
+.member-pane { min-width: 0; }
+.org-banner { display: flex; flex-direction: column; gap: 2px; }
+.org-banner-name { font-size: 15px; font-weight: 600; color: var(--text); }
+.org-banner-slug { font-size: 11.5px; color: var(--text-3); }
+
+/* modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(13, 27, 46, .45); display: grid; place-items: center; z-index: 100; backdrop-filter: blur(3px); }
+.modal { background: var(--surface); border-radius: 14px; padding: 22px; width: min(440px, 92vw); box-shadow: var(--sh-4); display: flex; flex-direction: column; gap: 12px; }
 .modal h3 { font-size: 16px; font-weight: 600; margin: 0; }
 .modal-sub { font-size: 12.5px; color: var(--text-3); margin: -6px 0 4px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field .label { font-size: 12px; color: var(--text-2); }
 .optional { color: var(--text-4); font-weight: 400; }
-.form-error {
-  font-size: 12.5px;
-  color: var(--danger);
-  background: var(--danger-soft);
-  padding: 8px 10px;
-  border-radius: 6px;
-}
+.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); }
+.input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.form-error { font-size: 12.5px; color: var(--danger); background: var(--danger-soft); padding: 8px 10px; border-radius: 6px; }
+.btn-link { border: 0; background: none; color: var(--primary); font-size: 11.5px; cursor: pointer; text-align: left; padding: 4px 0 0; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
-.pw-reveal {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 10px 12px;
-}
-.pw-text {
-  flex: 1;
-  font-family: var(--ff-mono);
-  font-size: 15px;
-  letter-spacing: 1px;
-  color: var(--text);
-  word-break: break-all;
-  user-select: all;
-}
+
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn:hover { background: var(--bg); }
+.btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-ghost { background: var(--surface); }
 </style>

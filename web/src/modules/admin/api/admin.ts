@@ -1,4 +1,8 @@
 import { client } from "@/api/client";
+import type {
+  MemberApi, MemberRow, MemberListParams, MemberPage,
+  MemberDeptRow, MemberDeptTreeRow,
+} from "@/shell/components";
 
 // === Shared paging / bulk shapes ===
 export interface Paged<T> {
@@ -530,4 +534,33 @@ export async function approveRegistration(scope: RegScope, id: string, role: "te
 }
 export async function rejectRegistration(scope: RegScope, id: string, reason: string) {
   await client.post(`${regBase(scope)}/${id}/reject`, { reason });
+}
+
+// === Tenant-console MemberApi adapter (binds to <MemberManager>) ===
+// Wraps the existing /admin/members* funcs into the MemberApi shape the shared
+// MemberManager consumes. Reset-password routes through the platform-user
+// endpoint (members are platform users), keyed by platform_user_id.
+export function tenantMemberApi(): MemberApi {
+  return {
+    listMembers: async (p: MemberListParams): Promise<MemberPage> => {
+      const res = await listMembersPaged({
+        page: p.page, pageSize: p.pageSize, search: p.search,
+        deptId: p.deptId, subtree: p.subtree,
+      });
+      return { data: res.data as unknown as MemberRow[], total: res.total, page: res.page, pageSize: res.pageSize };
+    },
+    fetchDeptTree: () => getDeptTree() as unknown as Promise<MemberDeptTreeRow[]>,
+    fetchDeptFlat: () => listDepts() as unknown as Promise<MemberDeptRow[]>,
+    setDept: (memberId, deptId) => setMemberDept(memberId, deptId),
+    assignPost: (memberId, postId) => assignMemberPost(memberId, postId),
+    removePost: (memberId, postId) => removeMemberPost(memberId, postId),
+    listRoles: () => listRoles(),
+    memberRoles: (m: MemberRow) => getMemberRoles(m.member_id),
+    grantRole: (m: MemberRow, code) => grantRoleToMember(m.member_id, code),
+    revokeRole: (m: MemberRow, roleId) => revokeRoleFromMember(m.member_id, roleId),
+    listPosts: () => listPosts(),
+    exportCsv: () => downloadMembersCsv(),
+    setDisabled: (m: MemberRow, disabled) => setMemberDisabled(m.member_id, disabled),
+    resetPassword: (m: MemberRow, pw) => resetPlatformUserPassword(m.platform_user_id, pw),
+  };
 }

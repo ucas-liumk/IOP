@@ -319,6 +319,27 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
+	// Current roles granted to the member in THIS org — used to pre-check the
+	// assign-role dialog. Mirrors /admin/members/:id/roles, but resolves the org
+	// from :tid instead of tenant context.
+	r.GET("/platform/orgs/:tid/members/:mid/roles", read(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		mid, err := kernel.ParseID(c.Param("mid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "成员 ID 无效", err))
+			return
+		}
+		roles, err := svc.MemberRoles(c.Request.Context(), mid, t.ID)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"roles": roles})
+	})
+
 	// --- Pickers for the assign-post / assign-role dialogs. ---
 
 	r.GET("/platform/orgs/:tid/posts", read(), func(c *gin.Context) {

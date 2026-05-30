@@ -14,3 +14,8 @@ export { default as SkeletonLoader } from "./SkeletonLoader.vue";
 export { default as TreeView } from "./TreeView.vue";
 export { default as DeptTreeManager } from "./DeptTreeManager.vue";
 export type { DeptApi, DeptRow, DeptTreeRow, CreateDeptPayload, UpdateDeptPatch } from "./DeptTreeManager.vue";
+export { default as MemberManager } from "./MemberManager.vue";
+export type {
+  MemberApi, MemberRow, MemberPostRow, RoleRow, PostRow,
+  MemberDeptRow, MemberDeptTreeRow, MemberListParams, MemberPage,
+} from "./MemberManager.vue";
