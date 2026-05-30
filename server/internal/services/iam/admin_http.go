@@ -9,6 +9,22 @@ import (
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
+// parseIDs converts a slice of string ids into kernel.IDs, failing fast on a bad value.
+func parseIDs(ss []string) ([]kernel.ID, error) {
+	out := make([]kernel.ID, 0, len(ss))
+	for _, s := range ss {
+		if s == "" {
+			continue
+		}
+		id, err := kernel.ParseID(s)
+		if err != nil {
+			return nil, errors.Wrap(errors.KindParam, "iam.invalid_id", "dept_id 无效", err)
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // RegisterAdminRoutes mounts /admin/roles + registration-applications endpoints.
 // Caller is expected to admin-gate this group via TenantAdminRequired.
 func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
@@ -124,19 +140,63 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 
 	r.POST("/admin/roles", func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
-		var req struct{ Code, Name string }
+		var req struct {
+			Code      string   `json:"code"`
+			Name      string   `json:"name"`
+			DataScope string   `json:"data_scope"`
+			DeptIDs   []string `json:"dept_ids"`
+		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
 			return
 		}
+		deptIDs, err := parseIDs(req.DeptIDs)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
 		role, err := svc.CreateRole(c.Request.Context(), CreateRoleCmd{
 			TenantID: tid, Code: req.Code, Name: req.Name,
+			DataScope: req.DataScope, DeptIDs: deptIDs,
 		})
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
 		apiresp.Created(c, role)
+	})
+
+	r.PATCH("/admin/roles/:id", func(c *gin.Context) {
+		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
+		rid, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "角色 ID 无效", err))
+			return
+		}
+		var req struct {
+			Code      *string   `json:"code"`
+			Name      *string   `json:"name"`
+			DataScope *string   `json:"data_scope"`
+			DeptIDs   *[]string `json:"dept_ids"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		cmd := UpdateRoleCmd{TenantID: tid, RoleID: rid, Code: req.Code, Name: req.Name, DataScope: req.DataScope}
+		if req.DeptIDs != nil {
+			ids, err := parseIDs(*req.DeptIDs)
+			if err != nil {
+				apiresp.Fail(c, err)
+				return
+			}
+			cmd.DeptIDs = &ids
+		}
+		if err := svc.UpdateRole(c.Request.Context(), cmd); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
 	})
 
 	r.DELETE("/admin/roles/:id", func(c *gin.Context) {

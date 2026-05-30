@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,6 +46,23 @@ func (s *Service) ChangePassword(ctx context.Context, cmd ChangePasswordCmd) err
 	return nil
 }
 
+// Valid data_scope values (reserved; not yet enforced on business queries — see spec §9).
+const (
+	DataScopeAll        = "all"
+	DataScopeDept       = "dept"
+	DataScopeDeptAndSub = "dept_and_sub"
+	DataScopeSelf       = "self"
+	DataScopeCustom     = "custom"
+)
+
+func validDataScope(s string) bool {
+	switch s {
+	case DataScopeAll, DataScopeDept, DataScopeDeptAndSub, DataScopeSelf, DataScopeCustom:
+		return true
+	}
+	return false
+}
+
 // RoleSummary is what the role list returns.
 type RoleSummary struct {
 	ID          kernel.ID    `json:"id"`
@@ -52,6 +70,8 @@ type RoleSummary struct {
 	Code        string       `json:"code"`
 	Name        string       `json:"name"`
 	BuiltIn     bool         `json:"built_in"`
+	DataScope   string       `json:"data_scope"`
+	DeptIDs     []kernel.ID  `json:"dept_ids,omitempty"`
 	MemberCount int          `json:"member_count"`
 	Policies    []PolicyRule `json:"policies"`
 }
@@ -60,7 +80,7 @@ type RoleSummary struct {
 func (s *Service) ListRoles(ctx context.Context, tenantID kernel.ID) ([]RoleSummary, error) {
 	pool := s.repo.(*pgRepo).pool
 	rows, err := pool.Query(ctx,
-		`SELECT id, tenant_id, code, name FROM public.role
+		`SELECT id, tenant_id, code, name, data_scope, is_builtin FROM public.role
 		 WHERE tenant_id IS NULL OR tenant_id = $1
 		 ORDER BY tenant_id NULLS FIRST, code`, tenantID)
 	if err != nil {
@@ -71,15 +91,35 @@ func (s *Service) ListRoles(ctx context.Context, tenantID kernel.ID) ([]RoleSumm
 	roleIDs := []kernel.ID{}
 	for rows.Next() {
 		var r RoleSummary
-		if err := rows.Scan(&r.ID, &r.TenantID, &r.Code, &r.Name); err != nil {
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Code, &r.Name, &r.DataScope, &r.BuiltIn); err != nil {
 			return nil, err
 		}
-		r.BuiltIn = r.TenantID == nil
 		roleIDs = append(roleIDs, r.ID)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// Custom data-scope dept bindings per role (scoped to this tenant).
+	deptIDsByRole := map[kernel.ID][]kernel.ID{}
+	if len(roleIDs) > 0 {
+		drows, err := pool.Query(ctx,
+			`SELECT role_id, dept_id FROM public.role_dept WHERE tenant_id = $1`, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		defer drows.Close()
+		for drows.Next() {
+			var rid, did kernel.ID
+			if err := drows.Scan(&rid, &did); err != nil {
+				return nil, err
+			}
+			deptIDsByRole[rid] = append(deptIDsByRole[rid], did)
+		}
+		if err := drows.Err(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Member counts per role (only counts within this tenant).
@@ -111,38 +151,181 @@ func (s *Service) ListRoles(ctx context.Context, tenantID kernel.ID) ([]RoleSumm
 	for i := range out {
 		out[i].MemberCount = counts[out[i].ID]
 		out[i].Policies = polByRole[out[i].ID]
+		if out[i].DataScope == DataScopeCustom {
+			out[i].DeptIDs = deptIDsByRole[out[i].ID]
+		}
 	}
 	return out, nil
 }
 
-// CreateRoleCmd creates a tenant-scoped role.
+// CreateRoleCmd creates a tenant-scoped role. DataScope defaults to "all"; DeptIDs
+// is only persisted (into public.role_dept) when DataScope == "custom".
 type CreateRoleCmd struct {
-	TenantID kernel.ID
-	Code     string
-	Name     string
+	TenantID  kernel.ID
+	Code      string
+	Name      string
+	DataScope string
+	DeptIDs   []kernel.ID
 }
 
 func (s *Service) CreateRole(ctx context.Context, cmd CreateRoleCmd) (*Role, error) {
 	if cmd.Code == "" || cmd.Name == "" {
 		return nil, errors.New(errors.KindParam, "iam.invalid_role", "code/name 必填")
 	}
+	scope := cmd.DataScope
+	if scope == "" {
+		scope = DataScopeAll
+	}
+	if !validDataScope(scope) {
+		return nil, errors.New(errors.KindParam, "iam.invalid_data_scope", "数据范围非法")
+	}
 	r := &Role{
 		ID: kernel.NewID(), TenantID: &cmd.TenantID,
 		Code: cmd.Code, Name: cmd.Name, CreatedAt: s.clock.Now(),
 	}
 	pool := s.repo.(*pgRepo).pool
-	_, err := pool.Exec(ctx,
-		`INSERT INTO public.role (id, tenant_id, code, name, created_at) VALUES ($1,$2,$3,$4,$5)`,
-		r.ID, *r.TenantID, r.Code, r.Name, r.CreatedAt)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO public.role (id, tenant_id, code, name, data_scope, is_builtin, created_at)
+		 VALUES ($1,$2,$3,$4,$5,FALSE,$6)`,
+		r.ID, *r.TenantID, r.Code, r.Name, scope, r.CreatedAt); err != nil {
+		return nil, errors.Wrap(errors.KindDatabase, "iam.create_role_failed", "创建角色失败", err)
+	}
+	if scope == DataScopeCustom {
+		if err := replaceRoleDepts(ctx, tx, r.ID, cmd.TenantID, cmd.DeptIDs); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, errors.Wrap(errors.KindDatabase, "iam.create_role_failed", "创建角色失败", err)
 	}
 	return r, nil
 }
 
-// DeleteRole removes a custom role (built-in rejected).
+// UpdateRoleCmd patches a role. nil fields are left unchanged. Built-in roles may
+// have name/data_scope/dept_ids changed but NOT their code.
+type UpdateRoleCmd struct {
+	TenantID  kernel.ID
+	RoleID    kernel.ID
+	Code      *string
+	Name      *string
+	DataScope *string
+	DeptIDs   *[]kernel.ID // nil = leave bindings unchanged
+}
+
+func (s *Service) UpdateRole(ctx context.Context, cmd UpdateRoleCmd) error {
+	pool := s.repo.(*pgRepo).pool
+
+	// Load the role to learn whether it's built-in and its (possibly platform-wide) scope.
+	var isBuiltin bool
+	var roleTenant *kernel.ID
+	var curScope string
+	if err := pool.QueryRow(ctx,
+		`SELECT is_builtin, tenant_id, data_scope FROM public.role
+		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2)`,
+		cmd.RoleID, cmd.TenantID).Scan(&isBuiltin, &roleTenant, &curScope); err != nil {
+		return errors.New(errors.KindNotFound, "iam.role_not_found", "角色不存在")
+	}
+	if cmd.Code != nil && isBuiltin {
+		return errors.New(errors.KindForbidden, "iam.builtin_code_locked", "内置角色编码不可修改")
+	}
+	if cmd.DataScope != nil && !validDataScope(*cmd.DataScope) {
+		return errors.New(errors.KindParam, "iam.invalid_data_scope", "数据范围非法")
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	sets := []string{}
+	args := []any{cmd.RoleID}
+	idx := 2
+	if cmd.Code != nil {
+		sets = append(sets, fmt.Sprintf("code = $%d", idx))
+		args = append(args, *cmd.Code)
+		idx++
+	}
+	if cmd.Name != nil {
+		sets = append(sets, fmt.Sprintf("name = $%d", idx))
+		args = append(args, *cmd.Name)
+		idx++
+	}
+	if cmd.DataScope != nil {
+		sets = append(sets, fmt.Sprintf("data_scope = $%d", idx))
+		args = append(args, *cmd.DataScope)
+		idx++
+	}
+	if len(sets) > 0 {
+		sql := "UPDATE public.role SET "
+		for i, ss := range sets {
+			if i > 0 {
+				sql += ", "
+			}
+			sql += ss
+		}
+		sql += " WHERE id = $1"
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			return errors.Wrap(errors.KindDatabase, "iam.update_role_failed", "更新角色失败", err)
+		}
+	}
+
+	// Resolve the effective scope after this update, to decide custom-dept handling.
+	effScope := curScope
+	if cmd.DataScope != nil {
+		effScope = *cmd.DataScope
+	}
+	if effScope == DataScopeCustom {
+		if cmd.DeptIDs != nil {
+			if err := replaceRoleDepts(ctx, tx, cmd.RoleID, cmd.TenantID, *cmd.DeptIDs); err != nil {
+				return err
+			}
+		}
+	} else if cmd.DataScope != nil {
+		// Switched away from custom — drop any stale dept bindings for this tenant.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM public.role_dept WHERE role_id = $1 AND tenant_id = $2`,
+			cmd.RoleID, cmd.TenantID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// replaceRoleDepts rewrites the custom data-scope dept bindings for a role+tenant.
+func replaceRoleDepts(ctx context.Context, tx pgx.Tx, roleID, tenantID kernel.ID, deptIDs []kernel.ID) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM public.role_dept WHERE role_id = $1 AND tenant_id = $2`, roleID, tenantID); err != nil {
+		return err
+	}
+	for _, did := range deptIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO public.role_dept (role_id, tenant_id, dept_id) VALUES ($1,$2,$3)
+			 ON CONFLICT (role_id, dept_id) DO NOTHING`, roleID, tenantID, did); err != nil {
+			return errors.Wrap(errors.KindDatabase, "iam.role_dept_failed", "保存数据范围部门失败", err)
+		}
+	}
+	return nil
+}
+
+// DeleteRole removes a custom role (built-in + cross-tenant rejected).
 func (s *Service) DeleteRole(ctx context.Context, tenantID, roleID kernel.ID) error {
 	pool := s.repo.(*pgRepo).pool
+	var isBuiltin bool
+	if err := pool.QueryRow(ctx,
+		`SELECT is_builtin FROM public.role WHERE id = $1 AND tenant_id = $2`,
+		roleID, tenantID).Scan(&isBuiltin); err != nil {
+		// No such tenant-owned role (could be a built-in template with NULL tenant_id).
+		return errors.New(errors.KindForbidden, "iam.cannot_delete_role", "内置角色不可删除")
+	}
+	if isBuiltin {
+		return errors.New(errors.KindForbidden, "iam.cannot_delete_role", "内置角色不可删除")
+	}
 	res, err := pool.Exec(ctx,
 		`DELETE FROM public.role WHERE id = $1 AND tenant_id = $2`, roleID, tenantID)
 	if err != nil {
