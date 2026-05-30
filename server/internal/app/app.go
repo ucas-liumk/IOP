@@ -42,6 +42,7 @@ type App struct {
 	Bus        *eventbus.InprocBus
 	Health     *health.Registry
 	Dictionary  *dictionary.Service
+	DictMemory  dictionary.Repository
 	I18n        *localization.Service
 	Tenancy     *tenancy.Service
 	IAM         *iam.Service
@@ -90,7 +91,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		})
 	}
 
-	dictSvc := dictionary.NewService(dictionary.MemoryRepo(map[string][]dictionary.Item{
+	dictMemory := dictionary.MemoryRepo(map[string][]dictionary.Item{
 		"plan_level": {
 			{TypeCode: "plan_level", Code: "year", Name: "年度", SortOrder: 1, Active: true},
 			{TypeCode: "plan_level", Code: "half_year", Name: "半年", SortOrder: 2, Active: true},
@@ -101,7 +102,8 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 			{TypeCode: "report_type", Code: "daily", Name: "日报", SortOrder: 1, Active: true},
 			{TypeCode: "report_type", Code: "weekly", Name: "周报", SortOrder: 2, Active: true},
 		},
-	}))
+	})
+	dictSvc := dictionary.NewService(dictMemory)
 
 	bundle, _ := localization.LoadYAMLBundle("./configs/i18n")
 	if bundle == nil {
@@ -173,6 +175,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		Bus:         bus,
 		Health:      healthReg,
 		Dictionary:  dictSvc,
+		DictMemory:  dictMemory,
 		I18n:        i18n,
 		Tenancy:     tenantSvc,
 		IAM:         iamSvc,
@@ -220,5 +223,21 @@ func (a *App) Engine() *gin.Engine {
 		filestorage.RegisterRoutes(authT, a.FileStorage)
 	}
 	okriface.RegisterRoutes(authT, a.OKR)
+
+	// Personal /me routes — auth only (no admin gate)
+	authOnly := api.Group("")
+	authOnly.Use(iam.JWTAuth(a.IAM))
+	iam.RegisterMeRoutes(authOnly, a.IAM)
+
+	// Admin routes — require tenant_admin OR platform_admin (gate checks role grants)
+	admin := authT.Group("")
+	admin.Use(iam.TenantAdminRequired(a.IAM))
+	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool)
+	iam.RegisterAdminRoutes(admin, a.IAM)
+	dictionary.RegisterAdminRoutes(admin, dictionary.AdminConfig{
+		Memory:   a.DictMemory,
+		TenantDB: a.Tenant,
+	}, []string{"plan_level", "report_type"})
+
 	return r
 }

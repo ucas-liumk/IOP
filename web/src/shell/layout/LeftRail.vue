@@ -32,9 +32,25 @@
       <span class="beta-tag">内测</span>
     </button>
 
+    <router-link
+      v-if="admin.is_tenant_admin || admin.is_platform_admin"
+      to="/admin"
+      class="rail-item admin-item"
+      :class="{ active: $route.path.startsWith('/admin') || $route.path.startsWith('/me/settings') }"
+      title="管理后台"
+    >
+      <div class="rail-ico">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      <div class="rail-label">管理</div>
+      <span v-if="admin.is_platform_admin" class="platform-tag">P</span>
+    </router-link>
+
     <div class="rail-spacer"></div>
 
-    <button class="rail-add" title="添加应用">
+    <button class="rail-add" title="添加应用" @click="appCenterOpen = true">
       <div class="ico-plus">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -42,17 +58,32 @@
       </div>
       <div class="rail-label">添加</div>
     </button>
+
+    <AppCenterModal :open="appCenterOpen" @close="appCenterOpen = false" @navigate="goTo" />
   </aside>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { listPlans } from "@/modules/okr/api/okr";
+import { getMyAdminFlags, type MeAdmin } from "@/modules/admin/api/admin";
+import AppCenterModal from "@/shell/appcenter/AppCenterModal.vue";
 
+const router = useRouter();
 const planCount = ref(0);
+const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false });
+const appCenterOpen = ref(false);
+
 onMounted(async () => {
   try { planCount.value = (await listPlans("week")).length; } catch {}
+  try { admin.value = await getMyAdminFlags(); } catch {}
 });
+
+function goTo(path: string) {
+  appCenterOpen.value = false;
+  router.push(path);
+}
 </script>
 
 <style scoped>
@@ -113,6 +144,25 @@ onMounted(async () => {
 
 .rail-item.installed .rail-ico { background: var(--cat-collab); color: #fff; }
 .rail-item.installed:hover .rail-ico { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(30,95,217,.25); }
+
+.rail-item.admin-item .rail-ico {
+  background: linear-gradient(135deg, var(--text-2), #0d1b2e);
+  color: #fff;
+}
+.rail-item.admin-item.active .rail-ico {
+  background: linear-gradient(135deg, var(--primary), #0d1b2e);
+  box-shadow: 0 4px 10px rgba(13,27,46,.25);
+}
+
+.platform-tag {
+  position: absolute;
+  top: 4px; right: 8px;
+  font-size: 8.5px; font-weight: 800;
+  padding: 1px 4px;
+  background: var(--purple);
+  color: white;
+  border-radius: 3px;
+}
 
 .rail-item .rail-badge {
   position: absolute;
