@@ -105,6 +105,14 @@ const router = createRouter({
             { path: "registrations", name: "platform.registrations", component: () => import("@/modules/admin/views/RegistrationsView.vue"), props: { scope: "platform" } },
             { path: "rbac",  name: "platform.rbac",  component: () => import("@/modules/platform/views/RbacView.vue") },
             { path: "menus", name: "platform.menus", component: () => import("@/modules/platform/views/MenuCatalogView.vue") },
+            // System pages (P3): dict / params / notices / logs / online / monitor / cron
+            { path: "dict",    name: "platform.dict",    component: () => import("@/modules/platform/views/PlatformDictView.vue") },
+            { path: "params",  name: "platform.params",  component: () => import("@/modules/platform/views/ParamsView.vue") },
+            { path: "notices", name: "platform.notices", component: () => import("@/modules/platform/views/PlatformNoticeView.vue") },
+            { path: "logs",    name: "platform.logs",    component: () => import("@/modules/platform/views/PlatformLogsView.vue") },
+            { path: "online",  name: "platform.online",  component: () => import("@/modules/platform/views/PlatformOnlineView.vue") },
+            { path: "monitor", name: "platform.monitor", component: () => import("@/modules/platform/views/MonitorView.vue") },
+            { path: "cron",    name: "platform.cron",    component: () => import("@/modules/platform/views/CronView.vue") },
           ],
         },
 
