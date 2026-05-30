@@ -12,3 +12,5 @@ export { default as ConfirmDialog } from "./ConfirmDialog.vue";
 export { default as LoadingSpinner } from "./LoadingSpinner.vue";
 export { default as SkeletonLoader } from "./SkeletonLoader.vue";
 export { default as TreeView } from "./TreeView.vue";
+export { default as DeptTreeManager } from "./DeptTreeManager.vue";
+export type { DeptApi, DeptRow, DeptTreeRow, CreateDeptPayload, UpdateDeptPatch } from "./DeptTreeManager.vue";

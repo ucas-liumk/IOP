@@ -1,6 +1,6 @@
 <template>
   <section class="admin-page">
-    <PageHeader title="组织机构" :sub="`平台共 ${tenants.length} 家组织 · 仅平台管理员可见`">
+    <PageHeader title="组织管理" :sub="`左选组织，右管其层级架构（部门 / 处室） · 平台共 ${tenants.length} 家组织`">
       <template #actions>
         <div class="head-actions">
           <button class="btn btn-ghost" @click="reload">刷新</button>
@@ -14,37 +14,70 @@
       <button class="page-error-close" @click="actionError = ''">×</button>
     </div>
 
-    <DataTable :columns="columns" :rows="tenants" rowKey="id">
-      <template #cell-org="{ row }">
-        <div class="tenant-cell">
-          <div class="t-logo" :style="{ background: colorFor(row.name) }">{{ row.name[0] }}</div>
-          <div>
-            <div class="t-name">{{ row.name }}</div>
-            <div class="t-meta">
-              <code>{{ row.slug }}</code>
-              <span class="schema">schema: <code class="mono">{{ row.schema_name }}</code></span>
-            </div>
-          </div>
+    <div class="two-pane">
+      <!-- LEFT: organization (tenant) list -->
+      <aside class="org-pane card">
+        <div class="org-pane-head">
+          <span class="org-pane-title">组织机构</span>
+          <span class="org-count">{{ tenants.length }}</span>
         </div>
-      </template>
-      <template #cell-status="{ row }">
-        <span class="status-tag" :class="`status-${row.status}`">
-          <span class="dot"></span>{{ statusLabel(row.status) }}
-        </span>
-      </template>
-      <template #cell-created_at="{ row }">
-        <span class="time">{{ formatTime(row.created_at) }}</span>
-      </template>
-      <template #cell-actions="{ row }">
-        <div class="row-actions">
-          <button v-if="row.status === 'active'" v-perm="'org:write'" class="btn btn-ghost btn-sm danger" @click="suspend(row)">暂停</button>
-          <button v-else-if="row.status === 'suspended'" v-perm="'org:write'" class="btn btn-ghost btn-sm" @click="resume(row)">恢复</button>
-          <span v-else class="muted">—</span>
-        </div>
-      </template>
-    </DataTable>
 
-    <EmptyState v-if="tenants.length === 0 && !loading" title="尚无组织机构" sub="点击右上「+ 新建组织」开通" />
+        <div v-if="tenants.length === 0 && !loading" class="org-empty">
+          <EmptyState title="尚无组织机构" sub="点击右上「+ 新建组织」开通" icon="◫" />
+        </div>
+
+        <ul v-else class="org-list">
+          <li
+            v-for="t in tenants"
+            :key="t.id"
+            class="org-row"
+            :class="{ selected: t.id === selectedOrgId }"
+            @click="selectOrg(t)"
+          >
+            <div class="t-logo" :style="{ background: colorFor(t.name) }">{{ t.name[0] }}</div>
+            <div class="t-main">
+              <div class="t-name">{{ t.name }}</div>
+              <div class="t-meta">
+                <code>{{ t.slug }}</code>
+                <span class="status-tag" :class="`status-${t.status}`">
+                  <span class="dot"></span>{{ statusLabel(t.status) }}
+                </span>
+              </div>
+            </div>
+            <div class="row-actions" @click.stop>
+              <button v-if="t.status === 'active'" v-perm="'org:write'" class="btn btn-ghost btn-sm danger" @click="suspend(t)">停用</button>
+              <button v-else-if="t.status === 'suspended'" v-perm="'org:write'" class="btn btn-ghost btn-sm" @click="resume(t)">恢复</button>
+              <span v-else class="muted">—</span>
+            </div>
+          </li>
+        </ul>
+      </aside>
+
+      <!-- RIGHT: dept-tree manager for the selected org -->
+      <div class="dept-pane">
+        <EmptyState
+          v-if="!selectedOrg"
+          title="选择左侧组织以管理其组织架构"
+          sub="点击左侧任一组织，在此查看与编辑其部门 / 处室层级"
+          icon="◫"
+        />
+        <DeptTreeManager
+          v-else
+          :key="selectedOrg.id"
+          :api="orgApi!"
+          :template-url="orgDeptTemplateUrl(selectedOrg.id)"
+          :import-url="orgDeptImportUrl(selectedOrg.id)"
+          write-perm="org:write"
+        >
+          <template #head-left>
+            <div class="org-banner">
+              <span class="org-banner-name">{{ selectedOrg.name }}</span>
+              <span class="org-banner-slug">schema: <code class="mono">{{ selectedOrg.schema_name }}</code></span>
+            </div>
+          </template>
+        </DeptTreeManager>
+      </div>
+    </div>
 
     <!-- Create modal -->
     <div v-if="creating" class="modal-overlay" @click.self="closeCreate">
@@ -75,12 +108,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { PageHeader, DataTable, EmptyState, type Column } from "@/shell/components";
+import { computed, onMounted, reactive, ref } from "vue";
+import { PageHeader, EmptyState, DeptTreeManager, type DeptApi } from "@/shell/components";
 import { client } from "@/api/client";
 import {
   listAllTenants, suspendTenant, resumeTenant, type PlatformTenant,
 } from "../api/admin";
+import {
+  orgDeptApi, orgDeptTemplateUrl, orgDeptImportUrl,
+} from "@/modules/platform/api/orgs";
 import { useConfirm } from "@/shell/confirm";
 
 const { confirm } = useConfirm();
@@ -90,18 +126,26 @@ const loading = ref(false);
 const busy = ref(false);
 const actionError = ref("");
 
-const columns: Column[] = [
-  { key: "org",        label: "组织",      width: 360 },
-  { key: "status",     label: "状态",      width: 100 },
-  { key: "created_at", label: "创建时间",  width: 160 },
-  { key: "actions",    label: "操作",      width: 140, align: "right" },
-];
+// Selected org → drives the right-hand dept manager.
+const selectedOrgId = ref<string | null>(null);
+const selectedOrg = computed(() => tenants.value.find((t) => t.id === selectedOrgId.value) ?? null);
+// New adapter per selected org; <DeptTreeManager :key> remounts on org change.
+const orgApi = computed<DeptApi | null>(() => (selectedOrg.value ? orgDeptApi(selectedOrg.value.id) : null));
+
+function selectOrg(t: PlatformTenant) {
+  selectedOrgId.value = t.id;
+}
 
 onMounted(reload);
 async function reload() {
   loading.value = true;
-  try { tenants.value = await listAllTenants(); }
-  finally { loading.value = false; }
+  try {
+    tenants.value = await listAllTenants();
+    // Drop a stale selection if the org disappeared.
+    if (selectedOrgId.value && !tenants.value.some((t) => t.id === selectedOrgId.value)) {
+      selectedOrgId.value = null;
+    }
+  } finally { loading.value = false; }
 }
 
 // === Create modal ===
@@ -131,13 +175,13 @@ async function confirmCreate() {
 }
 
 async function suspend(t: PlatformTenant) {
-  if (!(await confirm({ title: "确认", message: `确定暂停组织 "${t.name}"？该组织成员将无法登录。`, danger: true }))) return;
+  if (!(await confirm({ title: "确认", message: `确定停用组织 "${t.name}"？该组织成员将无法登录。`, danger: true }))) return;
   actionError.value = "";
   try {
     await suspendTenant(t.id);
     await reload();
   } catch (e: any) {
-    actionError.value = e.response?.data?.error?.message ?? "暂停失败";
+    actionError.value = e.response?.data?.error?.message ?? "停用失败";
   }
 }
 async function resume(t: PlatformTenant) {
@@ -152,13 +196,6 @@ async function resume(t: PlatformTenant) {
 
 function statusLabel(s: string) {
   return ({ active: "运行中", suspended: "已暂停", closed: "已关闭" } as Record<string, string>)[s] ?? s;
-}
-function formatTime(iso?: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const m = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${m(d.getMonth()+1)}-${m(d.getDate())} ${m(d.getHours())}:${m(d.getMinutes())}`;
 }
 function colorFor(name: string) {
   const seed = (name || "?").split("").reduce((s, c) => s + c.charCodeAt(0), 0);
@@ -186,46 +223,72 @@ function colorFor(name: string) {
   font-size: 18px; line-height: 1; cursor: pointer;
 }
 
-.tenant-cell { display: flex; gap: 10px; align-items: center; }
-.t-logo {
-  width: 32px; height: 32px;
-  border-radius: 7px;
-  color: white; font-weight: 700;
-  display: grid; place-items: center;
-  font-size: 14px;
-  flex-shrink: 0;
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+
+/* two-pane shell: org list | dept manager */
+.two-pane { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+
+/* LEFT pane */
+.org-pane { padding: 8px; display: flex; flex-direction: column; max-height: calc(100vh - 220px); }
+.org-pane-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px 10px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .5px;
 }
-.t-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
-.t-meta { font-size: 11.5px; color: var(--text-3); margin-top: 2px; display: flex; gap: 10px; }
-.schema { color: var(--text-4); }
+.org-count {
+  margin-left: auto; background: var(--surface-2); color: var(--text-2);
+  font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+}
+.org-empty { padding: 8px 0; }
+.org-list { list-style: none; margin: 0; padding: 0; overflow: auto; }
+.org-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 9px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .12s, border-color .12s;
+}
+.org-row:hover { background: var(--surface-2); }
+.org-row.selected { background: var(--primary-soft); border-color: var(--primary); }
+.t-logo {
+  width: 32px; height: 32px; border-radius: 7px;
+  color: white; font-weight: 700;
+  display: grid; place-items: center; font-size: 14px; flex-shrink: 0;
+}
+.t-main { flex: 1; min-width: 0; }
+.t-name { font-size: 13.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-meta { font-size: 11.5px; color: var(--text-3); margin-top: 3px; display: flex; gap: 8px; align-items: center; }
 code {
   background: var(--surface-2);
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-family: var(--ff-mono);
-  font-size: 11px;
+  padding: 1px 6px; border-radius: 3px;
+  font-family: var(--ff-mono); font-size: 11px;
 }
 code.mono { color: var(--text-2); }
+.org-row.selected code { background: var(--surface); }
 
 .status-tag {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
+  padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
 }
 .status-tag .dot { width: 5px; height: 5px; background: currentColor; border-radius: 50%; }
 .status-active { background: var(--success-soft); color: var(--success); }
 .status-suspended { background: var(--warning-soft); color: var(--warning); }
 .status-closed { background: var(--danger-soft); color: var(--danger); }
 
-.time { font-size: 12.5px; color: var(--text-2); font-family: var(--ff-mono); }
-.row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.row-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-sm.danger { color: var(--warning); }
 .btn-sm.danger:hover { background: var(--warning-soft); }
 .muted { color: var(--text-4); }
 
+/* RIGHT pane */
+.dept-pane { min-width: 0; }
+.org-banner { display: flex; flex-direction: column; gap: 2px; }
+.org-banner-name { font-size: 15px; font-weight: 600; color: var(--text); }
+.org-banner-slug { font-size: 11.5px; color: var(--text-3); }
+
+/* modal */
 .modal-overlay {
   position: fixed; inset: 0;
   background: rgba(13, 27, 46, .45);
@@ -245,6 +308,8 @@ code.mono { color: var(--text-2); }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field .label { font-size: 12px; color: var(--text-2); }
 .field-hint { margin-top: 2px; font-size: 11px; color: var(--text-3); }
+.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); }
+.input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
 .form-error {
   font-size: 12.5px;
   color: var(--danger);
@@ -253,4 +318,10 @@ code.mono { color: var(--text-2); }
   border-radius: 6px;
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn:hover { background: var(--bg); }
+.btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-ghost { background: var(--surface); }
 </style>
