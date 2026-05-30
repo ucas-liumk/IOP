@@ -1,7 +1,11 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/leo/iop/server/internal/services/iam"
@@ -116,5 +120,89 @@ func TestPlatformKeystone_BackfilledAdminIsSuper(t *testing.T) {
 	}
 	if !a.IAM.UserHasPlatformRole(ctx, kernel.ID(adminID), "super_admin") {
 		t.Fatal("backfilled admin must hold super_admin")
+	}
+}
+
+// 命门 6: 非超管无法切换治理模式 (HTTP level)
+//
+// Option A (real HTTP test): create a user → grant sys_admin (NOT super_admin) →
+// login via POST /api/auth/login with email → use Bearer token to PUT
+// /api/platform/rbac/governance-mode → assert 403 and that the mode is unchanged.
+func TestPlatformKeystone_NonSuperCannotSwitchMode(t *testing.T) {
+	a, cleanup := setupApp(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Spin up a real HTTP server backed by the full engine.
+	srv := httptest.NewServer(a.Engine())
+	defer srv.Close()
+
+	// Restore governance mode to single_admin on test exit in case anything leaked.
+	t.Cleanup(func() {
+		_ = a.IAM.SetGovernanceMode(context.Background(), iam.ModeSingleAdmin, "")
+	})
+
+	// 1. Create a user and grant sys_admin (not super_admin).
+	uid, email := mustCreateUser(t, a, "nonsupermode")
+	if err := a.IAM.GrantPlatformRoleByCode(ctx, kernel.ID(uid), "sys_admin", ""); err != nil {
+		t.Fatalf("grant sys_admin: %v", err)
+	}
+
+	// Sanity check: the user must NOT already hold super_admin.
+	if a.IAM.UserHasPlatformRole(ctx, kernel.ID(uid), "super_admin") {
+		t.Fatal("test setup error: sys_admin user must not have super_admin")
+	}
+
+	// 2. Login via HTTP to obtain a Bearer token.
+	loginBody, _ := json.Marshal(map[string]string{
+		"email":    email,
+		"password": "Test1234abc!",
+	})
+	loginResp, err := http.Post(srv.URL+"/api/auth/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("login HTTP: %v", err)
+	}
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login expected 200, got %d", loginResp.StatusCode)
+	}
+	var loginData struct {
+		Data struct {
+			Token struct {
+				AccessToken string `json:"access_token"`
+			} `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(loginResp.Body).Decode(&loginData); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	token := loginData.Data.Token.AccessToken
+	if token == "" {
+		t.Fatal("login returned empty access_token")
+	}
+
+	// 3. Ensure mode starts as single_admin.
+	_ = a.IAM.SetGovernanceMode(ctx, iam.ModeSingleAdmin, "")
+
+	// 4. Attempt PUT /api/platform/rbac/governance-mode with the sys_admin token.
+	putBody, _ := json.Marshal(map[string]string{"mode": "three_member"})
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/platform/rbac/governance-mode", bytes.NewReader(putBody))
+	putReq.Header.Set("Content-Type", "application/json")
+	putReq.Header.Set("Authorization", "Bearer "+token)
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT governance-mode HTTP: %v", err)
+	}
+	defer putResp.Body.Close()
+
+	// 5. Assert the server returned 403.
+	if putResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for sys_admin switching mode, got %d", putResp.StatusCode)
+	}
+
+	// 6. Assert the mode was NOT changed (defence-in-depth: verify DB state).
+	got := a.IAM.GovernanceMode(ctx)
+	if got != iam.ModeSingleAdmin {
+		t.Fatalf("mode must remain single_admin after rejected attempt, got %q", got)
 	}
 }
