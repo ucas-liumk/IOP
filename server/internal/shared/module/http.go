@@ -8,8 +8,8 @@ import (
 
 // RegisterAdminRoutes mounts /admin/permissions — used by the role-editor UI
 // to surface known resources × actions as dropdown options.
-func RegisterAdminRoutes(r *gin.RouterGroup, registry *Registry) {
-	r.GET("/admin/permissions", func(c *gin.Context) {
+func RegisterAdminRoutes(r *gin.RouterGroup, registry *Registry, authz AuthzFunc) {
+	r.GET("/admin/permissions", authz("role", "read"), func(c *gin.Context) {
 		// Group by resource for cleaner UI consumption.
 		byResource := map[string][]Permission{}
 		for _, p := range registry.AllPermissions() {

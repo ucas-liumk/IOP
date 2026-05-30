@@ -31,19 +31,19 @@
     </router-link>
 
     <router-link
-      v-if="admin.is_tenant_admin || admin.is_platform_admin"
-      :to="admin.is_platform_admin ? '/platform' : '/admin'"
+      v-if="admin.is_tenant_admin || admin.has_platform_access"
+      :to="admin.has_platform_access ? '/platform' : '/admin'"
       class="rail-item admin-item"
       :class="{ active: $route.path.startsWith('/admin') || $route.path.startsWith('/platform') }"
-      :title="admin.is_platform_admin ? '平台控制台' : '组织控制台'"
+      :title="admin.has_platform_access ? '平台控制台' : '组织控制台'"
     >
       <div class="rail-ico">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>
       </div>
-      <div class="rail-label">{{ admin.is_platform_admin ? '平台' : '管理' }}</div>
-      <span v-if="admin.is_platform_admin" class="platform-tag">P</span>
+      <div class="rail-label">{{ admin.has_platform_access ? '平台' : '管理' }}</div>
+      <span v-if="admin.has_platform_access" class="platform-tag">P</span>
     </router-link>
 
     <div class="rail-spacer"></div>
@@ -75,7 +75,7 @@ import AppCenterModal from "@/shell/appcenter/AppCenterModal.vue";
 
 const router = useRouter();
 const planCount = ref(0);
-const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false });
+const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false, has_platform_access: false });
 const appCenterOpen = ref(false);
 const myApps = ref<Manifest[]>([]);
 

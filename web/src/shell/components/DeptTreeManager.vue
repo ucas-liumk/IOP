@@ -6,14 +6,14 @@
         <button class="btn btn-ghost btn-sm" @click="reload">刷新</button>
         <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="exportCsv">导出</button>
         <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="importOpen = true">导入</button>
-        <button class="btn btn-primary btn-sm" v-perm="writePerm" @click="openCreate(null)">+ 新建根部门</button>
+        <button class="btn btn-primary btn-sm" v-perm="writePerm" @click="openCreate(null)">+ 新建部门</button>
       </div>
     </div>
 
     <div class="split">
       <!-- Left: department tree -->
       <article class="card tree-pane">
-        <div class="pane-head">组织架构 · {{ flatCount }} 个部门</div>
+        <div class="pane-head">组织架构 · {{ flatCount }} 个节点</div>
         <div class="tree-search">
           <input class="input search" v-model="treeFilter" placeholder="搜索部门" />
         </div>
@@ -28,11 +28,12 @@
           <template #label="{ node }">
             <span class="dept-node">
               {{ node.name }}
+              <span v-if="node.is_root" class="tag-root">根组织</span>
               <span v-if="node.status !== 'active'" class="tag-off">停用</span>
             </span>
           </template>
         </TreeView>
-        <div v-if="tree.length === 0" class="tree-empty-hint">尚无部门，点击右上角新建。</div>
+        <div v-if="tree.length === 0" class="tree-empty-hint">尚无组织节点。</div>
       </article>
 
       <!-- Right: detail / form -->
@@ -42,12 +43,12 @@
         <template v-else>
           <div class="detail-head">
             <h2 class="detail-title">
-              {{ mode === 'create' ? (form.parent_id ? '新建子部门' : '新建根部门') : form.name }}
+              {{ mode === 'create' ? (form.parent_id ? '新建子部门' : '新建部门') : form.name }}
             </h2>
             <div v-if="mode === 'view' && selected" class="detail-tools">
               <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="openCreate(selected.id)">+ 子部门</button>
               <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="startEdit">编辑</button>
-              <button class="btn btn-ghost btn-sm danger" v-perm="writePerm" @click="removeDept">删除</button>
+              <button v-if="!selected.is_root" class="btn btn-ghost btn-sm danger" v-perm="writePerm" @click="removeDept">删除</button>
             </div>
           </div>
 
@@ -80,8 +81,8 @@
             </label>
             <label class="field">
               <span class="label">上级部门</span>
-              <select class="input" v-model="form.parent_id">
-                <option :value="null">（根部门）</option>
+              <select class="input" v-model="form.parent_id" :disabled="mode === 'edit' && selected?.is_root">
+                <option :value="null">（挂到根组织）</option>
                 <option v-for="d in selectableParents" :key="d.id" :value="d.id">{{ indentName(d) }}</option>
               </select>
             </label>
@@ -92,7 +93,7 @@
               </label>
               <label class="field" v-if="mode === 'edit'">
                 <span class="label">状态</span>
-                <select class="input" v-model="form.status">
+                <select class="input" v-model="form.status" :disabled="selected?.is_root">
                   <option value="active">正常</option>
                   <option value="disabled">停用</option>
                 </select>
@@ -155,6 +156,7 @@ export interface DeptRow {
   phone?: string;
   email?: string;
   status: string;
+  is_root?: boolean;
   created_at: string;
 }
 export interface DeptTreeRow extends DeptRow {
@@ -265,7 +267,8 @@ function select(id: string) {
 }
 
 function parentName(d: DeptRow): string {
-  if (!d.parent_id) return "（根部门）";
+  if (d.is_root) return "—";
+  if (!d.parent_id) return "根组织";
   return flat.value.find((x) => x.id === d.parent_id)?.name ?? "—";
 }
 
@@ -341,12 +344,14 @@ async function save() {
     } else if (mode.value === "edit" && selected.value) {
       const id = selected.value.id;
       const origParent = selected.value.parent_id ?? null;
-      await props.api.update(id, {
+      const patch: UpdateDeptPatch = {
         name: form.name.trim(), order_num: form.order_num,
-        leader: form.leader, phone: form.phone, email: form.email, status: form.status,
-      });
+        leader: form.leader, phone: form.phone, email: form.email,
+      };
+      if (!selected.value.is_root) patch.status = form.status;
+      await props.api.update(id, patch);
       // Reparent separately via the dedicated move endpoint (cycle-checked server-side).
-      if ((form.parent_id ?? null) !== origParent) {
+      if (!selected.value.is_root && (form.parent_id ?? null) !== origParent) {
         await props.api.move(id, form.parent_id);
       }
       await reload();
@@ -360,6 +365,10 @@ async function save() {
 
 async function removeDept() {
   if (!selected.value) return;
+  if (selected.value.is_root) {
+    notify.error("根组织不能删除");
+    return;
+  }
   const ok = await confirm({ title: "删除部门", message: `确认删除「${selected.value.name}」？子部门或在职成员存在时无法删除。`, danger: true });
   if (!ok) return;
   try {
@@ -401,6 +410,7 @@ defineExpose({ reload });
 .crumb { display: inline-flex; align-items: center; }
 .crumb-sep { margin: 0 6px; color: var(--text-4); }
 .dept-node { display: inline-flex; align-items: center; gap: 6px; }
+.tag-root { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--primary-soft); color: var(--primary); border-radius: 3px; }
 .tag-off { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--bg-deep); color: var(--text-3); border-radius: 3px; }
 
 .detail-pane { padding: 20px 22px; min-height: 320px; }

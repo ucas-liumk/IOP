@@ -10,6 +10,8 @@ import (
 	"github.com/leo/iop/server/internal/shared/module"
 )
 
+type AuthzFunc func(resource, action string) gin.HandlerFunc
+
 // RegisterMeRoutes mounts /me/apps under the auth-only group.
 // Returns just the apps this tenant has installed.
 func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
@@ -44,8 +46,8 @@ func RegisterCatalogRoutes(r *gin.RouterGroup, svc *Service) {
 
 // RegisterAdminRoutes mounts /admin/apps/:code/install (POST + DELETE).
 // Caller is expected to wrap with TenantAdminRequired.
-func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service) {
-	r.POST("/admin/apps/:code/install", func(c *gin.Context) {
+func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, authz AuthzFunc) {
+	r.POST("/admin/apps/:code/install", authz("app", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
 		code := c.Param("code")
@@ -60,7 +62,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service) {
 		apiresp.OK(c, gin.H{"ok": true, "installed": code})
 	})
 
-	r.DELETE("/admin/apps/:code/install", func(c *gin.Context) {
+	r.DELETE("/admin/apps/:code/install", authz("app", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		code := c.Param("code")
 		if err := svc.Uninstall(c.Request.Context(), tid, code); err != nil {

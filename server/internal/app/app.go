@@ -9,8 +9,15 @@ import (
 	redislib "github.com/redis/go-redis/v9"
 
 	"github.com/leo/iop/server/internal/config"
+	"github.com/leo/iop/server/internal/contexts/approval"
+	"github.com/leo/iop/server/internal/contexts/books"
+	"github.com/leo/iop/server/internal/contexts/docs"
+	"github.com/leo/iop/server/internal/contexts/lcform"
+	"github.com/leo/iop/server/internal/contexts/mindmap"
+	"github.com/leo/iop/server/internal/contexts/news"
 	"github.com/leo/iop/server/internal/contexts/okr"
 	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
+	"github.com/leo/iop/server/internal/contexts/project"
 	"github.com/leo/iop/server/internal/contexts/tasks"
 	"github.com/leo/iop/server/internal/infrastructure/health"
 	loggerinfra "github.com/leo/iop/server/internal/infrastructure/logger"
@@ -209,9 +216,15 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	}
 	registry.Register(okr.New(deps))
 	registry.Register(tasks.New(deps))
+	registry.Register(approval.New(deps))
+	registry.Register(lcform.New(deps))
+	registry.Register(docs.New(deps))
+	registry.Register(project.New(deps))
+	registry.Register(mindmap.New(deps))
+	registry.Register(news.New(deps))
+	registry.Register(books.New(deps))
 	// Add future modules here, e.g.:
 	//   registry.Register(crm.New(deps))
-	//   registry.Register(approval.New(deps))
 
 	// Give the built-in tenant_member role read/write on every registered module's
 	// resources so members can use apps their tenant enabled (RBAC stays enforced;
@@ -269,13 +282,16 @@ func (a *App) Engine() *gin.Engine {
 	if a.Cfg.Env == "dev" {
 		rlCfg = middleware.DevRateLimit()
 	}
-	r.Use(middleware.RateLimit(a.RDB, rlCfg))
-	r.Use(middleware.Idempotency(a.RDB))
+	rateLimit := middleware.RateLimit(a.RDB, rlCfg)
+	idempotency := middleware.Idempotency(a.RDB)
 
 	api := r.Group("/api")
-	dictionary.RegisterRoutes(api, a.Dictionary)
-	iam.RegisterRoutes(api, a.IAM, a.Tenancy, a.Pool)
-	tenancy.RegisterPublicRoutes(api, a.Tenancy)
+	publicAPI := api.Group("")
+	publicAPI.Use(rateLimit)
+	publicAPI.Use(idempotency)
+	dictionary.RegisterRoutes(publicAPI, a.Dictionary)
+	iam.RegisterRoutes(publicAPI, a.IAM, a.Tenancy, a.Pool)
+	tenancy.RegisterPublicRoutes(publicAPI, a.Tenancy)
 
 	// Authenticated tenant-scoped group
 	authT := api.Group("")
@@ -284,6 +300,8 @@ func (a *App) Engine() *gin.Engine {
 	// Block must-change users from the privileged/business surface (authoritative;
 	// allowlists /api/me* + /api/auth/* so they can still change their password).
 	authT.Use(iam.PasswordChangeGate(a.IAM))
+	authT.Use(rateLimit)
+	authT.Use(idempotency)
 	audit.RegisterRoutes(authT, a.Audit)
 	notification.RegisterRoutes(authT, a.Notif)
 	if a.FileStorage != nil {
@@ -299,14 +317,26 @@ func (a *App) Engine() *gin.Engine {
 	authz := func(resource, action string) gin.HandlerFunc {
 		return iam.RBAC(a.IAM, resource, action)
 	}
+	dataScope := func(ctx context.Context, memberID, tenantID kernel.ID) (module.ScopeSpec, error) {
+		spec, err := a.IAM.ResolveDataScope(ctx, memberID, tenantID)
+		if err != nil {
+			return module.ScopeSpec{}, err
+		}
+		return module.ScopeSpec{
+			Kind:         spec.Kind,
+			DeptIDs:      spec.DeptIDs,
+			SelfMemberID: spec.SelfMemberID,
+		}, nil
+	}
 	deps := module.Deps{
-		Pool:     a.Pool,
-		Tenant:   a.Tenant,
-		Platform: a.Platform,
-		Bus:      a.Bus,
-		Logger:   a.Logger,
-		Clock:    kernel.RealClock{},
-		Authz:    authz,
+		Pool:      a.Pool,
+		Tenant:    a.Tenant,
+		Platform:  a.Platform,
+		Bus:       a.Bus,
+		Logger:    a.Logger,
+		Clock:     kernel.RealClock{},
+		Authz:     authz,
+		DataScope: dataScope,
 		AppEnabled: func(ctx context.Context, tenantID kernel.ID, code string) (bool, error) {
 			return a.AppStore.IsInstalled(ctx, tenantID, code)
 		},
@@ -315,12 +345,15 @@ func (a *App) Engine() *gin.Engine {
 	// Backward-compat: also mount OKR at the flat /api/plans /api/reports /api/rollups paths
 	// so the existing frontend keeps working without recompile. Same RBAC gating.
 	if okrMod, _ := a.Modules.Get("okr").(*okr.Module); okrMod != nil {
-		okriface.RegisterRoutes(authT, okrMod.AppService(), authz)
+		okriface.RegisterRoutes(authT, okrMod.AppService(), authz, a.Tenant, dataScope)
 	}
 
 	// Personal /me routes — auth only (no admin gate)
 	authOnly := api.Group("")
 	authOnly.Use(iam.JWTAuth(a.IAM))
+	authOnly.Use(iam.PasswordChangeGate(a.IAM))
+	authOnly.Use(rateLimit)
+	authOnly.Use(idempotency)
 	iam.RegisterMeRoutes(authOnly, a.IAM)
 	// Effective menu tree + flat perms for the current user. On authOnly (no
 	// TenantLoader) so a platform-only user with no tenant context can still load
@@ -336,15 +369,15 @@ func (a *App) Engine() *gin.Engine {
 	admin.Use(iam.TenantAdminRequired(a.IAM))
 	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool, authz)
 	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool, authz)
-	audit.RegisterAdminRoutes(admin, a.Audit)
+	audit.RegisterAdminRoutes(admin, a.Audit, authz)
 	dictionary.RegisterAdminRoutes(admin, dictionary.AdminConfig{
 		Memory:   a.DictMemory,
 		TenantDB: a.Tenant,
-	}, []string{"plan_level", "report_type"})
-	appstore.RegisterAdminRoutes(admin, a.AppStore)
-	module.RegisterAdminRoutes(admin, a.Modules)
+	}, []string{"plan_level", "report_type"}, authz)
+	appstore.RegisterAdminRoutes(admin, a.AppStore, authz)
+	module.RegisterAdminRoutes(admin, a.Modules, authz)
 	// Complete tenant-console menu catalog (unfiltered) for the role editor.
-	a.RegisterTenantMenuCatalogRoute(admin)
+	a.RegisterTenantMenuCatalogRoute(admin, authz)
 
 	// === Platform console (/platform/*, /tenants) === GLOBAL, tenant-LESS.
 	// Gated by the global is_platform_admin flag (PlatformAdminRequired). Mounted
@@ -355,20 +388,22 @@ func (a *App) Engine() *gin.Engine {
 	platform.Use(iam.JWTAuth(a.IAM))
 	platform.Use(iam.PasswordChangeGate(a.IAM))
 	platform.Use(iam.PlatformAccess(a.IAM))
-	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool)
+	platform.Use(rateLimit)
+	platform.Use(idempotency)
+	platformAuthz := func(resource, action string) gin.HandlerFunc {
+		return iam.PlatformAuthz(a.IAM, a.Audit, resource, action)
+	}
+	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool, a.Audit)
 	iam.RegisterPlatformRBACRoutes(platform, a.IAM, a.Audit)
 	// P3 platform-console extras: notice / params / operation+login logs /
 	// online users / monitor / cron jobs. Each route is individually gated with
 	// PlatformAuthz(resource:action).
 	iam.RegisterPlatformExtrasRoutes(platform, a.IAM, a.Audit, a.Pool, &monitorProbe{health: a.Health, rdb: a.RDB})
-	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
 	// Platform-side org governance: manage ANY organization's department tree by
 	// passing the org's tenant id (/platform/orgs/:tid/depts*). Reuses the tenant
 	// console's dept service funcs; gated per-route with the platform RBAC policy
 	// (org:read / org:write). authz is injected so tenancy stays free of iam.
-	platformAuthz := func(resource, action string) gin.HandlerFunc {
-		return iam.PlatformAuthz(a.IAM, a.Audit, resource, action)
-	}
+	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool, platformAuthz)
 	tenancy.RegisterPlatformOrgRoutes(platform, a.Tenancy, a.Pool, platformAuthz)
 	// Platform-side org governance: manage ANY organization's MEMBERS (+ that org's
 	// posts/roles pickers) by passing the org's tenant id
@@ -379,7 +414,7 @@ func (a *App) Engine() *gin.Engine {
 	// tenancy — registering here keeps the wiring acyclic.
 	iam.RegisterPlatformOrgMemberRoutes(platform, a.IAM, a.Audit, a.Pool)
 	// Complete platform-console menu catalog (unfiltered) for the role editor.
-	a.RegisterPlatformMenuCatalogRoute(platform)
+	a.RegisterPlatformMenuCatalogRoute(platform, platformAuthz)
 
 	return r
 }

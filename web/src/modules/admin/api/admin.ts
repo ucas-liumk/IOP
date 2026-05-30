@@ -38,12 +38,21 @@ async function uploadCsv(path: string, file: File): Promise<BulkResult> {
   return (r.data?.data ?? r.data) as BulkResult;
 }
 
-export interface MeAdmin { is_tenant_admin: boolean; is_platform_admin: boolean }
+export interface MeAdmin {
+  is_tenant_admin: boolean;
+  is_platform_admin: boolean;
+  has_platform_access: boolean;
+}
 export async function getMyAdminFlags(): Promise<MeAdmin> {
   try {
     const r = await client.get("/me/admin");
-    return r.data?.data ?? { is_tenant_admin: false, is_platform_admin: false };
-  } catch { return { is_tenant_admin: false, is_platform_admin: false }; }
+    const d = r.data?.data ?? {};
+    return {
+      is_tenant_admin: !!d.is_tenant_admin,
+      is_platform_admin: !!d.is_platform_admin,
+      has_platform_access: !!(d.has_platform_access ?? d.is_platform_admin),
+    };
+  } catch { return { is_tenant_admin: false, is_platform_admin: false, has_platform_access: false }; }
 }
 
 export interface MemberPost { post_id: string; code: string; name: string }
@@ -141,6 +150,7 @@ export interface Dept {
   phone?: string;
   email?: string;
   status: string;
+  is_root?: boolean;
   created_at: string;
 }
 export interface DeptTreeNode extends Dept {

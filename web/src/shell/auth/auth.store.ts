@@ -23,6 +23,7 @@ export const useAuthStore = defineStore("auth", {
     tenant: null as Tenant | null,
     tenants: [] as Tenant[],
     isPlatformAdmin: false,
+    hasPlatformAccess: false,
     isTenantAdmin: false,
     restored: false, // becomes true once restore() has run this page-load
     // RBAC: visible menu trees per console (driven by /me/menus) + flat perm set.
@@ -84,6 +85,7 @@ export const useAuthStore = defineStore("auth", {
       this.tenant = null;
       this.tenants = [];
       this.isPlatformAdmin = false;
+      this.hasPlatformAccess = false;
       this.isTenantAdmin = false;
       this.menusTenant = [];
       this.menusPlatform = [];
@@ -101,9 +103,11 @@ export const useAuthStore = defineStore("auth", {
         const res = await client.get("/me/admin");
         const d = res.data?.data ?? {};
         this.isPlatformAdmin = !!d.is_platform_admin;
+        this.hasPlatformAccess = !!(d.has_platform_access ?? d.is_platform_admin);
         this.isTenantAdmin = !!d.is_tenant_admin;
       } catch {
         this.isPlatformAdmin = false;
+        this.hasPlatformAccess = false;
         this.isTenantAdmin = false;
       }
     },

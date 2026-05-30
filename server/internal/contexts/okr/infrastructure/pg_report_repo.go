@@ -114,6 +114,13 @@ func (r *PGReportRepo) List(ctx context.Context, f domain.ReportFilter) ([]*doma
 			where += ` AND owner = $` + itoa(idx)
 			args = append(args, f.Owner)
 			idx++
+		} else if !f.AllOwners {
+			if len(f.Owners) == 0 {
+				return nil
+			}
+			where += ` AND owner = ANY($` + itoa(idx) + `::uuid[])`
+			args = append(args, idStrings(f.Owners))
+			idx++
 		}
 		if f.Type != "" {
 			where += ` AND type = $` + itoa(idx)

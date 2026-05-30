@@ -76,6 +76,19 @@ type Permission struct {
 // role editor can grant it. Admins (tenant_admin / platform_admin) bypass.
 type AuthzFunc func(resource, action string) gin.HandlerFunc
 
+// ScopeSpec is the resolved row-level data scope for the current tenant member.
+// It intentionally mirrors iam.ScopeSpec without making business modules import
+// the iam package directly.
+type ScopeSpec struct {
+	Kind         string
+	DeptIDs      []kernel.ID
+	SelfMemberID kernel.ID
+}
+
+// DataScopeFunc resolves row-level data access for a tenant member. Modules use
+// it to enforce object-level visibility in addition to route-level RBAC.
+type DataScopeFunc func(ctx context.Context, memberID, tenantID kernel.ID) (ScopeSpec, error)
+
 // AppEnabledFunc reports whether a tenant has enabled (installed) the given app
 // code via the AppStore. Used by the Registry to gate module routes so that
 // disabling an app actually blocks its API, not just its UI visibility.
@@ -93,6 +106,8 @@ type Deps struct {
 	// Authz gates module routes by declared permission. Never nil in production
 	// wiring; modules should still guard against nil for unit tests.
 	Authz AuthzFunc
+	// DataScope resolves row-level data access for the active member/tenant.
+	DataScope DataScopeFunc
 	// AppEnabled, when set, gates each module's routes on tenant AppStore enablement.
 	AppEnabled AppEnabledFunc
 }

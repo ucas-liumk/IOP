@@ -137,10 +137,16 @@ func (s *Service) ImportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return nil, err
 	}
+	rootID, err := rootDeptID(ctx, tx, t)
+	if err != nil {
+		return nil, err
+	}
 
 	// Seed the known-name → id map from existing departments so children can attach
 	// to an already-persisted parent.
-	rows, err := tx.Query(ctx, `SELECT id, name FROM department`)
+	rows, err := tx.Query(ctx,
+		`SELECT id, name FROM department
+		 WHERE tenant_id = $1 AND deleted_at IS NULL`, t.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,12 +187,14 @@ func (s *Service) ImportDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 					continue
 				}
 				parentID = &pid
+			} else {
+				parentID = &rootID
 			}
 			id := kernel.NewID()
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO department (id, name, parent_id, order_num, leader, phone, email, status)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-				id, r.name, idPtrOrNil(parentID), r.orderNum,
+				`INSERT INTO department (id, tenant_id, name, parent_id, order_num, leader, phone, email, status, is_root)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false)`,
+				id, t.ID, r.name, idPtrOrNil(parentID), r.orderNum,
 				nullStr(r.leader), nullStr(r.phone), nullStr(r.email), r.status); err != nil {
 				res.Fail(r.row, r.name, "写入失败: "+err.Error())
 				progressed = true

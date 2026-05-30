@@ -2,9 +2,12 @@ package tenancy
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/leo/iop/server/internal/interface/apiresp"
@@ -22,6 +25,7 @@ type DeptRow struct {
 	Phone     string     `json:"phone,omitempty"`
 	Email     string     `json:"email,omitempty"`
 	Status    string     `json:"status"`
+	IsRoot    bool       `json:"is_root"`
 	CreatedAt string     `json:"created_at"`
 }
 
@@ -49,9 +53,10 @@ func (s *Service) ListDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) 
 	rows, err := tx.Query(ctx,
 		`SELECT id, name, parent_id, order_num,
 		        COALESCE(leader,''), COALESCE(phone,''), COALESCE(email,''),
-		        status, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
+		        status, COALESCE(is_root, false), to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM department
-		 ORDER BY order_num, name`)
+		 WHERE tenant_id = $1 AND deleted_at IS NULL
+		 ORDER BY order_num, name`, t.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +65,7 @@ func (s *Service) ListDepts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) 
 	for rows.Next() {
 		var d DeptRow
 		if err := rows.Scan(&d.ID, &d.Name, &d.ParentID, &d.OrderNum,
-			&d.Leader, &d.Phone, &d.Email, &d.Status, &d.CreatedAt); err != nil {
+			&d.Leader, &d.Phone, &d.Email, &d.Status, &d.IsRoot, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -130,10 +135,21 @@ func (s *Service) CreateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return nil, err
 	}
+	parentID := cmd.ParentID
+	if parentID == nil {
+		rid, err := rootDeptID(ctx, tx, t)
+		if err != nil {
+			return nil, err
+		}
+		parentID = &rid
+	}
 	// Validate parent exists if provided.
-	if cmd.ParentID != nil {
+	if parentID != nil {
 		var count int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM department WHERE id = $1`, *cmd.ParentID).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM department
+			 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+			*parentID, t.ID).Scan(&count); err != nil {
 			return nil, err
 		}
 		if count == 0 {
@@ -143,10 +159,10 @@ func (s *Service) CreateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	id := kernel.NewID()
 	var createdAt string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO department (id, name, parent_id, order_num, leader, phone, email, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+		`INSERT INTO department (id, tenant_id, name, parent_id, order_num, leader, phone, email, status, is_root)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', false)
 		 RETURNING to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')`,
-		id, cmd.Name, idPtrOrNil(cmd.ParentID), cmd.OrderNum,
+		id, t.ID, cmd.Name, idPtrOrNil(parentID), cmd.OrderNum,
 		nullStr(cmd.Leader), nullStr(cmd.Phone), nullStr(cmd.Email),
 	).Scan(&createdAt); err != nil {
 		return nil, errors.Wrap(errors.KindDatabase, "tenancy.create_dept_failed", "创建部门失败", err)
@@ -155,7 +171,7 @@ func (s *Service) CreateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 		return nil, err
 	}
 	return &DeptRow{
-		ID: id, Name: cmd.Name, ParentID: cmd.ParentID, OrderNum: cmd.OrderNum,
+		ID: id, Name: cmd.Name, ParentID: parentID, OrderNum: cmd.OrderNum,
 		Leader: cmd.Leader, Phone: cmd.Phone, Email: cmd.Email,
 		Status: "active", CreatedAt: createdAt,
 	}, nil
@@ -187,6 +203,20 @@ func (s *Service) UpdateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return err
+	}
+	var isRoot bool
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(is_root, false)
+		 FROM department
+		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		cmd.DeptID, t.ID).Scan(&isRoot); err != nil {
+		if stderrors.Is(err, pgx.ErrNoRows) {
+			return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
+		}
+		return err
+	}
+	if isRoot && cmd.Status != nil && *cmd.Status != "active" {
+		return errors.New(errors.KindParam, "tenancy.dept_root_status", "根组织不能禁用")
 	}
 	sets := []string{}
 	args := []any{cmd.DeptID}
@@ -224,7 +254,8 @@ func (s *Service) UpdateDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 		}
 		sql += ss
 	}
-	sql += " WHERE id = $1"
+	sql += fmt.Sprintf(" WHERE id = $1 AND tenant_id = $%d AND deleted_at IS NULL", idx)
+	args = append(args, t.ID)
 	res, err := tx.Exec(ctx, sql, args...)
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "tenancy.update_dept_failed", "更新部门失败", err)
@@ -250,8 +281,25 @@ func (s *Service) DeleteDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return err
 	}
+	var isRoot bool
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(is_root, false)
+		 FROM department
+		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		id, t.ID).Scan(&isRoot); err != nil {
+		if stderrors.Is(err, pgx.ErrNoRows) {
+			return errors.New(errors.KindNotFound, "tenancy.dept_not_found", "部门不存在")
+		}
+		return err
+	}
+	if isRoot {
+		return errors.New(errors.KindParam, "tenancy.dept_root_delete_forbidden", "根组织不能删除")
+	}
 	var children int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM department WHERE parent_id = $1`, id).Scan(&children); err != nil {
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM department
+		 WHERE parent_id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		id, t.ID).Scan(&children); err != nil {
 		return err
 	}
 	if children > 0 {
@@ -264,7 +312,11 @@ func (s *Service) DeleteDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if members > 0 {
 		return errors.New(errors.KindParam, "tenancy.dept_has_members", "请先移除部门成员")
 	}
-	res, err := tx.Exec(ctx, `DELETE FROM department WHERE id = $1`, id)
+	res, err := tx.Exec(ctx,
+		`UPDATE department
+		 SET deleted_at = now(), status = 'disabled'
+		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		id, t.ID)
 	if err != nil {
 		return err
 	}
@@ -289,8 +341,22 @@ func (s *Service) MoveDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant, i
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return err
 	}
+	rootID, err := rootDeptID(ctx, tx, t)
+	if err != nil {
+		return err
+	}
+	if id == rootID {
+		return errors.New(errors.KindParam, "tenancy.dept_root_move_forbidden", "根组织不能移动")
+	}
+	parentID := newParentID
+	if parentID == nil {
+		parentID = &rootID
+	}
 	// Load all depts to check for cycles.
-	rows, err := tx.Query(ctx, `SELECT id, parent_id FROM department`)
+	rows, err := tx.Query(ctx,
+		`SELECT id, parent_id
+		 FROM department
+		 WHERE tenant_id = $1 AND deleted_at IS NULL`, t.ID)
 	if err != nil {
 		return err
 	}
@@ -309,12 +375,15 @@ func (s *Service) MoveDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant, i
 		return err
 	}
 	// Check cycle: newParentID must not be id or any descendant of id.
-	if newParentID != nil {
-		if *newParentID == id {
+	if parentID != nil {
+		if *parentID == id {
 			return errors.New(errors.KindParam, "tenancy.dept_cycle", "不能将部门移动到自身")
 		}
+		if _, ok := parentOf[*parentID]; !ok {
+			return errors.New(errors.KindParam, "tenancy.dept_parent_not_found", "父部门不存在")
+		}
 		// Walk ancestors of newParentID — if we reach id, it's a cycle.
-		cur := newParentID
+		cur := parentID
 		for cur != nil {
 			p := parentOf[*cur]
 			if p != nil && *p == id {
@@ -323,7 +392,11 @@ func (s *Service) MoveDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant, i
 			cur = p
 		}
 	}
-	res, err := tx.Exec(ctx, `UPDATE department SET parent_id = $1 WHERE id = $2`, idPtrOrNil(newParentID), id)
+	res, err := tx.Exec(ctx,
+		`UPDATE department
+		 SET parent_id = $1
+		 WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL`,
+		idPtrOrNil(parentID), id, t.ID)
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "tenancy.move_dept_failed", "移动部门失败", err)
 	}
@@ -363,7 +436,76 @@ func collectDescendants(flat []DeptRow, rootID kernel.ID) []kernel.ID {
 	return out
 }
 
+// EnsureRootDept creates the one root organization node for the tenant if it
+// does not already exist. It is idempotent and safe to run after provisioning or
+// schema synchronization.
+func (s *Service) EnsureRootDept(ctx context.Context, pool *pgxpool.Pool, t *Tenant) (*DeptRow, error) {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Release()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
+		return nil, err
+	}
+	rootID, err := rootDeptID(ctx, tx, t)
+	if err != nil {
+		return nil, err
+	}
+	var d DeptRow
+	if err := tx.QueryRow(ctx,
+		`SELECT id, name, parent_id, order_num,
+		        COALESCE(leader,''), COALESCE(phone,''), COALESCE(email,''),
+		        status, COALESCE(is_root, false), to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
+		 FROM department
+		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		rootID, t.ID).Scan(&d.ID, &d.Name, &d.ParentID, &d.OrderNum,
+		&d.Leader, &d.Phone, &d.Email, &d.Status, &d.IsRoot, &d.CreatedAt); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 // helpers ----------------------------------------------------------------
+
+func rootDeptID(ctx context.Context, tx pgx.Tx, t *Tenant) (kernel.ID, error) {
+	var id kernel.ID
+	err := tx.QueryRow(ctx,
+		`SELECT id
+		 FROM department
+		 WHERE tenant_id = $1 AND is_root = true AND deleted_at IS NULL
+		 ORDER BY created_at ASC
+		 LIMIT 1`, t.ID).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !stderrors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	name := strings.TrimSpace(t.Name)
+	if name == "" {
+		name = strings.TrimSpace(t.Slug)
+	}
+	if name == "" {
+		name = "根组织"
+	}
+	id = kernel.NewID()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO department (id, tenant_id, name, parent_id, order_num, status, is_root)
+		 VALUES ($1, $2, $3, NULL, 0, 'active', true)`,
+		id, t.ID, name); err != nil {
+		return "", errors.Wrap(errors.KindDatabase, "tenancy.create_root_dept_failed", "创建根组织失败", err)
+	}
+	return id, nil
+}
 
 func idPtrOrNil(id *kernel.ID) any {
 	if id == nil {
@@ -411,7 +553,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.OK(c, res)
 	})
 
-	r.GET("/admin/depts", func(c *gin.Context) {
+	r.GET("/admin/depts", authz("dept", "read"), func(c *gin.Context) {
 		depts, err := svc.ListDepts(c.Request.Context(), pool, tenantFromCtx(c))
 		if err != nil {
 			apiresp.Fail(c, err)
@@ -420,7 +562,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.OK(c, gin.H{"depts": depts})
 	})
 
-	r.GET("/admin/depts/tree", func(c *gin.Context) {
+	r.GET("/admin/depts/tree", authz("dept", "read"), func(c *gin.Context) {
 		tree, err := svc.DeptTree(c.Request.Context(), pool, tenantFromCtx(c))
 		if err != nil {
 			apiresp.Fail(c, err)
@@ -429,7 +571,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.OK(c, gin.H{"tree": tree})
 	})
 
-	r.POST("/admin/depts", func(c *gin.Context) {
+	r.POST("/admin/depts", authz("dept", "write"), func(c *gin.Context) {
 		var req struct {
 			Name     string  `json:"name" binding:"required"`
 			ParentID *string `json:"parent_id"`
@@ -462,7 +604,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.Created(c, dept)
 	})
 
-	r.PATCH("/admin/depts/:id", func(c *gin.Context) {
+	r.PATCH("/admin/depts/:id", authz("dept", "write"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
@@ -490,7 +632,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/depts/:id", func(c *gin.Context) {
+	r.DELETE("/admin/depts/:id", authz("dept", "write"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))
@@ -503,7 +645,7 @@ func registerDeptRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, au
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/depts/:id/move", func(c *gin.Context) {
+	r.POST("/admin/depts/:id/move", authz("dept", "write"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "部门 ID 无效", err))

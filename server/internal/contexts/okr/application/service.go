@@ -53,6 +53,9 @@ func (s *Service) CreatePlan(ctx context.Context, cmd CreatePlanCmd) (*domain.Pl
 		if parent == nil {
 			return nil, domain.ErrPlanNotFound
 		}
+		if parent.Owner != cmd.Owner {
+			return nil, errors.New(errors.KindForbidden, "okr.plan.parent_forbidden", "无权挂载到该父计划")
+		}
 		if err := s.decomp.Validate(parent, p.Level, p.Period); err != nil {
 			return nil, err
 		}
@@ -144,6 +147,15 @@ func (s *Service) ListMyPlans(ctx context.Context, owner kernel.ID, level string
 	return s.plans.List(ctx, domain.PlanFilter{Owner: owner, Level: domain.PlanLevel(level), Pagination: p})
 }
 
+func (s *Service) ListPlansScoped(ctx context.Context, owners []kernel.ID, allOwners bool, level string, p kernel.Pagination) ([]*domain.Plan, error) {
+	return s.plans.List(ctx, domain.PlanFilter{
+		Owners:     owners,
+		AllOwners:  allOwners,
+		Level:      domain.PlanLevel(level),
+		Pagination: p,
+	})
+}
+
 func (s *Service) GetPlan(ctx context.Context, id kernel.ID) (*domain.Plan, error) {
 	return s.plans.Get(ctx, id)
 }
@@ -220,6 +232,15 @@ func (s *Service) ListReports(ctx context.Context, owner kernel.ID, typ string, 
 	return s.reports.List(ctx, domain.ReportFilter{Owner: owner, Type: domain.ReportType(typ), Pagination: p})
 }
 
+func (s *Service) ListReportsScoped(ctx context.Context, owners []kernel.ID, allOwners bool, typ string, p kernel.Pagination) ([]*domain.Report, error) {
+	return s.reports.List(ctx, domain.ReportFilter{
+		Owners:     owners,
+		AllOwners:  allOwners,
+		Type:       domain.ReportType(typ),
+		Pagination: p,
+	})
+}
+
 func (s *Service) GetReport(ctx context.Context, id kernel.ID) (*domain.Report, error) {
 	return s.reports.Get(ctx, id)
 }
@@ -238,6 +259,11 @@ func (s *Service) ListReportComments(ctx context.Context, reportID kernel.ID) ([
 func (s *Service) RollupWeekly(ctx context.Context, week time.Time) ([]domain.RollupRow, error) {
 	period := s.cadence.CurrentWeek(week)
 	return s.rollup.WeeklyByDept(ctx, period.Start.Format("2006-01-02"), period.End.Format("2006-01-02"))
+}
+
+func (s *Service) RollupWeeklyScoped(ctx context.Context, week time.Time, owners []kernel.ID, allOwners bool) ([]domain.RollupRow, error) {
+	period := s.cadence.CurrentWeek(week)
+	return s.rollup.WeeklyByDeptScoped(ctx, period.Start.Format("2006-01-02"), period.End.Format("2006-01-02"), owners, allOwners)
 }
 
 // =============================================================================

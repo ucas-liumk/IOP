@@ -330,11 +330,15 @@ func (r *pgRepo) GetRoleByCode(ctx context.Context, code string, tenantID *kerne
 	var err error
 	if tenantID == nil {
 		err = r.pool.QueryRow(ctx,
-			`SELECT id, tenant_id, code, name, created_at FROM public.role WHERE code = $1 AND tenant_id IS NULL`,
+			`SELECT id, tenant_id, code, name, created_at
+			 FROM public.role
+			 WHERE code = $1 AND tenant_id IS NULL AND deleted_at IS NULL`,
 			code).Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt)
 	} else {
 		err = r.pool.QueryRow(ctx,
-			`SELECT id, tenant_id, code, name, created_at FROM public.role WHERE code = $1 AND tenant_id = $2`,
+			`SELECT id, tenant_id, code, name, created_at
+			 FROM public.role
+			 WHERE code = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
 			code, *tenantID).Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -350,7 +354,7 @@ func (r *pgRepo) ListMemberRoles(ctx context.Context, memberID kernel.ID, tenant
 	rows, err := r.pool.Query(ctx,
 		`SELECT r.id, r.tenant_id, r.code, r.name, r.created_at
 		 FROM public.role_grant g JOIN public.role r ON r.id = g.role_id
-		 WHERE g.member_id = $1 AND g.tenant_id = $2`,
+		 WHERE g.member_id = $1 AND g.tenant_id = $2 AND r.deleted_at IS NULL`,
 		memberID, tenantID)
 	if err != nil {
 		return nil, err
@@ -423,7 +427,7 @@ func (r *pgRepo) ListPlatformRolesForUser(ctx context.Context, platformUserID ke
 	rows, err := r.pool.Query(ctx,
 		`SELECT r.id, r.tenant_id, r.code, r.name, r.created_at
 		 FROM public.platform_role_grant g JOIN public.role r ON r.id = g.role_id
-		 WHERE g.platform_user_id = $1 AND r.tenant_id IS NULL`,
+		 WHERE g.platform_user_id = $1 AND r.tenant_id IS NULL AND r.deleted_at IS NULL`,
 		platformUserID)
 	if err != nil {
 		return nil, err
@@ -445,7 +449,9 @@ func (r *pgRepo) ListPlatformRoles(ctx context.Context) ([]*Role, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT r.id, r.tenant_id, r.code, r.name, r.created_at,
 		        (SELECT count(*) FROM public.platform_role_grant g WHERE g.role_id = r.id)
-		 FROM public.role r WHERE r.tenant_id IS NULL ORDER BY r.created_at`)
+		 FROM public.role r
+		 WHERE r.tenant_id IS NULL AND r.deleted_at IS NULL
+		 ORDER BY r.created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +476,9 @@ func (r *pgRepo) GetPlatformRoleByCode(ctx context.Context, code string) (*Role,
 func (r *pgRepo) GetPlatformRoleByID(ctx context.Context, id kernel.ID) (*Role, error) {
 	var role Role
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, tenant_id, code, name, created_at FROM public.role WHERE id = $1 AND tenant_id IS NULL`, id).
+		`SELECT id, tenant_id, code, name, created_at
+		 FROM public.role
+		 WHERE id = $1 AND tenant_id IS NULL AND deleted_at IS NULL`, id).
 		Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -489,9 +497,12 @@ func (r *pgRepo) CreatePlatformRole(ctx context.Context, id kernel.ID, code, nam
 	return err
 }
 
-// DeletePlatformRole removes a platform role (cascades grants + policies via FK).
+// DeletePlatformRole logically deletes a platform role.
 func (r *pgRepo) DeletePlatformRole(ctx context.Context, id kernel.ID) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM public.role WHERE id = $1 AND tenant_id IS NULL`, id)
+	_, err := r.pool.Exec(ctx,
+		`UPDATE public.role
+		 SET deleted_at = now()
+		 WHERE id = $1 AND tenant_id IS NULL AND deleted_at IS NULL`, id)
 	return err
 }
 
@@ -549,7 +560,8 @@ func (r *pgRepo) EnsureSuperAdminGrants(ctx context.Context) error {
 		 SELECT r.id, u.id, NULL
 		 FROM public.platform_user u
 		 CROSS JOIN public.role r
-		 WHERE u.is_platform_admin = TRUE AND r.code = 'super_admin' AND r.tenant_id IS NULL
+		 WHERE u.is_platform_admin = TRUE AND r.code = 'super_admin'
+		   AND r.tenant_id IS NULL AND r.deleted_at IS NULL
 		 ON CONFLICT (role_id, platform_user_id) DO NOTHING`)
 	return err
 }

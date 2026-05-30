@@ -9,6 +9,8 @@ import (
 // PlanFilter is a value object describing a Plan query.
 type PlanFilter struct {
 	Owner      kernel.ID
+	Owners     []kernel.ID
+	AllOwners  bool
 	Level      PlanLevel
 	Pagination kernel.Pagination
 }
@@ -24,6 +26,8 @@ type PlanRepository interface {
 // ReportRepository.
 type ReportFilter struct {
 	Owner      kernel.ID
+	Owners     []kernel.ID
+	AllOwners  bool
 	Type       ReportType
 	From, To   *Period
 	Pagination kernel.Pagination
@@ -50,6 +54,7 @@ type Comment struct {
 // RollupQuery is a Query-side projection (CQRS local optimization).
 type RollupQuery interface {
 	WeeklyByDept(ctx context.Context, periodStart, periodEnd string) ([]RollupRow, error)
+	WeeklyByDeptScoped(ctx context.Context, periodStart, periodEnd string, owners []kernel.ID, allOwners bool) ([]RollupRow, error)
 }
 
 // RollupRow is what /rollups/weekly returns: one line per member.

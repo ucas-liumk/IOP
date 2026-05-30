@@ -5,6 +5,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/leo/iop/server/internal/interface/apiresp"
+	"github.com/leo/iop/server/internal/services/audit"
 	"github.com/leo/iop/server/internal/shared/errors"
 	"github.com/leo/iop/server/internal/shared/kernel"
 	"github.com/leo/iop/server/internal/shared/tenantdb"
@@ -49,7 +50,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 
 	// Registration applications.
 	// Tenant admins see only applications targeting their tenant; platform admins see all.
-	r.GET("/admin/registrations", func(c *gin.Context) {
+	r.GET("/admin/registrations", authz("registration", "read"), func(c *gin.Context) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		status := c.DefaultQuery("status", AppStatusPending)
 		if status == "all" {
@@ -68,7 +69,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"applications": apps, "count": len(apps)})
 	})
 
-	r.POST("/admin/registrations/:id/approve", func(c *gin.Context) {
+	r.POST("/admin/registrations/:id/approve", authz("registration", "write"), func(c *gin.Context) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		appID, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -110,7 +111,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"user": u})
 	})
 
-	r.POST("/admin/registrations/:id/reject", func(c *gin.Context) {
+	r.POST("/admin/registrations/:id/reject", authz("registration", "write"), func(c *gin.Context) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		appID, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -147,7 +148,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 	})
 
 	// Roles (admin)
-	r.GET("/admin/roles", func(c *gin.Context) {
+	r.GET("/admin/roles", authz("role", "read"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		roles, err := svc.ListRoles(c.Request.Context(), tid)
 		if err != nil {
@@ -157,7 +158,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"roles": roles})
 	})
 
-	r.POST("/admin/roles", func(c *gin.Context) {
+	r.POST("/admin/roles", authz("role", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		var req struct {
 			Code      string   `json:"code"`
@@ -185,7 +186,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.Created(c, role)
 	})
 
-	r.PATCH("/admin/roles/:id", func(c *gin.Context) {
+	r.PATCH("/admin/roles/:id", authz("role", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		rid, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -218,7 +219,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/roles/:id", func(c *gin.Context) {
+	r.DELETE("/admin/roles/:id", authz("role", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		rid, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.DeleteRole(c.Request.Context(), tid, rid); err != nil {
@@ -228,7 +229,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/roles/:id/policies", func(c *gin.Context) {
+	r.POST("/admin/roles/:id/policies", authz("role", "write"), func(c *gin.Context) {
 		rid, _ := kernel.ParseID(c.Param("id"))
 		var req struct{ Resource, Action string }
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -242,7 +243,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/roles/:id/policies", func(c *gin.Context) {
+	r.DELETE("/admin/roles/:id/policies", authz("role", "write"), func(c *gin.Context) {
 		rid, _ := kernel.ParseID(c.Param("id"))
 		resource := c.Query("resource")
 		action := c.Query("action")
@@ -255,7 +256,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 
 	// Batch policy edit: apply adds + removes in one transaction. Coexists with the
 	// single add/remove routes above (used by the role editor's bulk save).
-	r.POST("/admin/roles/:id/policies/batch", func(c *gin.Context) {
+	r.POST("/admin/roles/:id/policies/batch", authz("role", "write"), func(c *gin.Context) {
 		rid, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "角色 ID 无效", err))
@@ -276,7 +277,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/members/:id/roles", func(c *gin.Context) {
+	r.POST("/admin/members/:id/roles", authz("member", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		mid, _ := kernel.ParseID(c.Param("id"))
 		var req struct{ Code string }
@@ -291,7 +292,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/members/:id/roles/:roleId", func(c *gin.Context) {
+	r.DELETE("/admin/members/:id/roles/:roleId", authz("member", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		mid, _ := kernel.ParseID(c.Param("id"))
 		rid, _ := kernel.ParseID(c.Param("roleId"))
@@ -302,7 +303,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.GET("/admin/members/:id/roles", func(c *gin.Context) {
+	r.GET("/admin/members/:id/roles", authz("member", "read"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		mid, _ := kernel.ParseID(c.Param("id"))
 		roles, err := svc.MemberRoles(c.Request.Context(), mid, tid)
@@ -316,7 +317,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 	// Online users (在线用户): active sessions bound to the current tenant. These
 	// MUST live on the tenant-admin group (TenantLoader-populated context), not the
 	// tenant-less /me group, or tenantdb.FromContext returns no tenant.
-	r.GET("/admin/online", func(c *gin.Context) {
+	r.GET("/admin/online", authz("online", "read"), func(c *gin.Context) {
 		tc, ok := tenantdb.FromContext(c.Request.Context())
 		if !ok || tc.ID == "" {
 			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.no_tenant", "缺少租户上下文"))
@@ -332,7 +333,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 
 	// Kick (force-logout) a session — scoped to the acting admin's tenant so a
 	// tenant admin cannot revoke sessions outside their own organization.
-	r.POST("/admin/online/:sid/kick", func(c *gin.Context) {
+	r.POST("/admin/online/:sid/kick", authz("online", "write"), func(c *gin.Context) {
 		tc, ok := tenantdb.FromContext(c.Request.Context())
 		if !ok || tc.ID == "" {
 			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.no_tenant", "缺少租户上下文"))
@@ -364,9 +365,9 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 // (platform admin only — caller gates with PlatformAdminRequired; this group has
 // NO tenant context). Covers cross-tenant user management, registration review,
 // and platform stats.
-func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
+func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, aud *audit.Service) {
 	// --- Platform overview stats ---
-	r.GET("/platform/stats", func(c *gin.Context) {
+	r.GET("/platform/stats", PlatformAuthz(svc, aud, "org", "read"), func(c *gin.Context) {
 		ctx := c.Request.Context()
 		var orgs, users, pending int
 		_ = pool.QueryRow(ctx, `SELECT count(*) FROM public.tenant WHERE status='active'`).Scan(&orgs)
@@ -376,7 +377,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 	})
 
 	// --- Cross-tenant registration review (platform admin sees ALL) ---
-	r.GET("/platform/registrations", func(c *gin.Context) {
+	r.GET("/platform/registrations", PlatformAuthz(svc, aud, "org", "read"), func(c *gin.Context) {
 		status := c.DefaultQuery("status", AppStatusPending)
 		if status == "all" {
 			status = ""
@@ -388,7 +389,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		}
 		apiresp.OK(c, gin.H{"applications": apps, "count": len(apps)})
 	})
-	r.POST("/platform/registrations/:id/approve", func(c *gin.Context) {
+	r.POST("/platform/registrations/:id/approve", PlatformAuthz(svc, aud, "org", "write"), func(c *gin.Context) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		appID, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -408,7 +409,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		}
 		apiresp.OK(c, gin.H{"user": u})
 	})
-	r.POST("/platform/registrations/:id/reject", func(c *gin.Context) {
+	r.POST("/platform/registrations/:id/reject", PlatformAuthz(svc, aud, "org", "write"), func(c *gin.Context) {
 		claims, _ := ClaimsFromContext(c.Request.Context())
 		appID, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -427,7 +428,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 	})
 
 	// --- Cross-tenant platform users ---
-	r.GET("/platform/users", func(c *gin.Context) {
+	r.GET("/platform/users", PlatformAuthz(svc, aud, "user", "read"), func(c *gin.Context) {
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
 		p = clampPageSize(p, 100)
@@ -447,7 +448,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		})
 	})
 
-	r.POST("/platform/users", func(c *gin.Context) {
+	r.POST("/platform/users", PlatformAuthz(svc, aud, "user", "write"), func(c *gin.Context) {
 		var req struct {
 			Username       string `json:"username" binding:"required"`
 			RealName       string `json:"real_name" binding:"required"`
@@ -477,7 +478,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		apiresp.Created(c, u)
 	})
 
-	r.GET("/platform/users/:id", func(c *gin.Context) {
+	r.GET("/platform/users/:id", PlatformAuthz(svc, aud, "user", "read"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
@@ -495,7 +496,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		apiresp.OK(c, u)
 	})
 
-	r.POST("/platform/users/:id/disable", func(c *gin.Context) {
+	r.POST("/platform/users/:id/disable", PlatformAuthz(svc, aud, "user", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.SetUserStatus(c.Request.Context(), id, "disabled"); err != nil {
 			apiresp.Fail(c, err)
@@ -504,7 +505,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/platform/users/:id/enable", func(c *gin.Context) {
+	r.POST("/platform/users/:id/enable", PlatformAuthz(svc, aud, "user", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.SetUserStatus(c.Request.Context(), id, "active"); err != nil {
 			apiresp.Fail(c, err)
@@ -513,7 +514,7 @@ func RegisterPlatformAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/platform/users/:id/reset-password", func(c *gin.Context) {
+	r.POST("/platform/users/:id/reset-password", PlatformAuthz(svc, aud, "user", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		var req struct {
 			NewPassword string `json:"new_password" binding:"required"`
@@ -573,9 +574,10 @@ func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
 		isTA := svc.IsTenantAdmin(c.Request.Context(), claims.MemberID, tid)
 		isPA := svc.IsPlatformAdminUser(c.Request.Context(), claims.PlatformUserID)
 		apiresp.OK(c, gin.H{
-			"is_tenant_admin":   isTA,
-			"is_platform_admin": isPA,
-			"has_tenant":        claims.TenantID != "",
+			"is_tenant_admin":     isTA,
+			"is_platform_admin":   isPA,
+			"has_platform_access": svc.HasAnyPlatformRole(c.Request.Context(), claims.PlatformUserID),
+			"has_tenant":          claims.TenantID != "",
 		})
 	})
 }

@@ -8,9 +8,8 @@ import (
 
 // ScopeSpec is the resolved data-access scope for a member within a tenant.
 //
-// RESERVED / NOT YET ENFORCED. This helper computes the effective scope but the
-// platform does NOT (yet) apply it to business queries — see spec §0.4 / §9. It is
-// provided so module authors can adopt row-level scoping incrementally:
+// Business modules use this helper through module.DataScopeFunc to apply
+// row-level visibility in addition to route-level RBAC:
 //
 //	spec, _ := iam.ResolveDataScope(ctx, memberID, tenantID)
 //	switch spec.Kind {
@@ -52,7 +51,7 @@ func scopeRank(kind string) int {
 // to the member in the tenant. Precedence: all > dept_and_sub > dept > custom > self.
 // When the winning scope is "custom", DeptIDs is the UNION of the member's roles'
 // public.role_dept bindings for this tenant. Defaults to "self" when the member has
-// no roles (least privilege). RESERVED — not enforced on business queries yet.
+// no roles (least privilege).
 func (s *Service) ResolveDataScope(ctx context.Context, memberID, tenantID kernel.ID) (ScopeSpec, error) {
 	pool := s.repo.(*pgRepo).pool
 
@@ -60,7 +59,7 @@ func (s *Service) ResolveDataScope(ctx context.Context, memberID, tenantID kerne
 		`SELECT r.id, r.data_scope
 		 FROM public.role_grant g
 		 JOIN public.role r ON r.id = g.role_id
-		 WHERE g.member_id = $1 AND g.tenant_id = $2`, memberID, tenantID)
+		 WHERE g.member_id = $1 AND g.tenant_id = $2 AND r.deleted_at IS NULL`, memberID, tenantID)
 	if err != nil {
 		return ScopeSpec{}, err
 	}

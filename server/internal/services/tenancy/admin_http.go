@@ -28,7 +28,7 @@ type AuthzFunc func(resource, action string) gin.HandlerFunc
 // Caller is responsible for gating these with tenant_admin RBAC; authz adds the
 // per-route permission gate for import/export (dept:write / member:write etc).
 func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
-	r.GET("/admin/members", func(c *gin.Context) {
+	r.GET("/admin/members", authz("member", "read"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
@@ -63,7 +63,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		})
 	})
 
-	r.PATCH("/admin/members/:id", func(c *gin.Context) {
+	r.PATCH("/admin/members/:id", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		mid, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -113,7 +113,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/members/:id/posts", func(c *gin.Context) {
+	r.POST("/admin/members/:id/posts", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		mid, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -140,7 +140,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/members/:id/posts/:postId", func(c *gin.Context) {
+	r.DELETE("/admin/members/:id/posts/:postId", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		mid, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
@@ -160,7 +160,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/members/:id/disable", func(c *gin.Context) {
+	r.POST("/admin/members/:id/disable", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		mid, _ := kernel.ParseID(c.Param("id"))
 		t := &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
@@ -171,7 +171,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/members/:id/enable", func(c *gin.Context) {
+	r.POST("/admin/members/:id/enable", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		mid, _ := kernel.ParseID(c.Param("id"))
 		t := &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
@@ -182,7 +182,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.GET("/admin/tenant", func(c *gin.Context) {
+	r.GET("/admin/tenant", authz("settings", "read"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		t, err := svc.GetTenant(c.Request.Context(), kernel.ID(tc.ID))
 		if err != nil {
@@ -194,7 +194,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		apiresp.OK(c, gin.H{"tenant": t, "member_count": count})
 	})
 
-	r.PATCH("/admin/tenant", func(c *gin.Context) {
+	r.PATCH("/admin/tenant", authz("settings", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		var req struct {
 			Name string `json:"name"`
@@ -211,6 +211,6 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 	})
 
 	registerDeptRoutes(r, svc, pool, authz)
-	registerPostRoutes(r, svc, pool)
-	registerNoticeRoutes(r, svc, pool)
+	registerPostRoutes(r, svc, pool, authz)
+	registerNoticeRoutes(r, svc, pool, authz)
 }

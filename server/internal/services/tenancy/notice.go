@@ -40,9 +40,9 @@ func (s *Service) ListNotices(ctx context.Context, pool *pgxpool.Pool, t *Tenant
 		return nil, err
 	}
 	args := []any{p.PageSize, p.Offset()}
-	where := ""
+	where := " WHERE deleted_at IS NULL"
 	if status != "" {
-		where = " WHERE status = $3"
+		where += " AND status = $3"
 		args = append(args, status)
 	}
 	rows, err := tx.Query(ctx,
@@ -167,7 +167,7 @@ func (s *Service) UpdateNotice(ctx context.Context, pool *pgxpool.Pool, t *Tenan
 		}
 		sql += ss
 	}
-	sql += " WHERE id = $1"
+	sql += " WHERE id = $1 AND deleted_at IS NULL"
 	res, err := tx.Exec(ctx, sql, args...)
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "tenancy.update_notice_failed", "更新公告失败", err)
@@ -193,7 +193,10 @@ func (s *Service) DeleteNotice(ctx context.Context, pool *pgxpool.Pool, t *Tenan
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return err
 	}
-	res, err := tx.Exec(ctx, `DELETE FROM notice WHERE id = $1`, id)
+	res, err := tx.Exec(ctx,
+		`UPDATE notice
+		 SET deleted_at = now(), status = 'draft'
+		 WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
@@ -218,7 +221,10 @@ func (s *Service) setNoticeStatus(ctx context.Context, pool *pgxpool.Pool, t *Te
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
 		return err
 	}
-	res, err := tx.Exec(ctx, `UPDATE notice SET status = $1 WHERE id = $2`, status, id)
+	res, err := tx.Exec(ctx,
+		`UPDATE notice
+		 SET status = $1
+		 WHERE id = $2 AND deleted_at IS NULL`, status, id)
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "tenancy.notice_status_failed", "更新公告状态失败", err)
 	}
@@ -249,8 +255,8 @@ func currentMemberID(c *gin.Context) *kernel.ID {
 }
 
 // registerNoticeRoutes mounts /admin/notices/* (tenant_admin gated by the caller).
-func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
-	r.GET("/admin/notices", func(c *gin.Context) {
+func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
+	r.GET("/admin/notices", authz("notice", "read"), func(c *gin.Context) {
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
 		notices, err := svc.ListNotices(c.Request.Context(), pool, tenantFromCtx(c), p, c.Query("status"))
@@ -261,7 +267,7 @@ func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) 
 		apiresp.OK(c, gin.H{"notices": notices})
 	})
 
-	r.POST("/admin/notices", func(c *gin.Context) {
+	r.POST("/admin/notices", authz("notice", "manage"), func(c *gin.Context) {
 		var req struct {
 			Title   string `json:"title" binding:"required"`
 			Content string `json:"content"`
@@ -281,7 +287,7 @@ func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) 
 		apiresp.Created(c, notice)
 	})
 
-	r.PATCH("/admin/notices/:id", func(c *gin.Context) {
+	r.PATCH("/admin/notices/:id", authz("notice", "manage"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "公告 ID 无效", err))
@@ -305,7 +311,7 @@ func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) 
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/notices/:id", func(c *gin.Context) {
+	r.DELETE("/admin/notices/:id", authz("notice", "manage"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "公告 ID 无效", err))
@@ -318,7 +324,7 @@ func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) 
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/notices/:id/publish", func(c *gin.Context) {
+	r.POST("/admin/notices/:id/publish", authz("notice", "manage"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "公告 ID 无效", err))
@@ -331,7 +337,7 @@ func registerNoticeRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) 
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/admin/notices/:id/withdraw", func(c *gin.Context) {
+	r.POST("/admin/notices/:id/withdraw", authz("notice", "manage"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "公告 ID 无效", err))

@@ -46,7 +46,8 @@ func (s *Service) ChangePassword(ctx context.Context, cmd ChangePasswordCmd) err
 	return nil
 }
 
-// Valid data_scope values (reserved; not yet enforced on business queries — see spec §9).
+// Valid data_scope values. Business modules can resolve and enforce these scopes
+// through module.DataScopeFunc.
 const (
 	DataScopeAll        = "all"
 	DataScopeDept       = "dept"
@@ -81,7 +82,7 @@ func (s *Service) ListRoles(ctx context.Context, tenantID kernel.ID) ([]RoleSumm
 	pool := s.repo.(*pgRepo).pool
 	rows, err := pool.Query(ctx,
 		`SELECT id, tenant_id, code, name, data_scope, is_builtin FROM public.role
-		 WHERE tenant_id IS NULL OR tenant_id = $1
+		 WHERE (tenant_id IS NULL OR tenant_id = $1) AND deleted_at IS NULL
 		 ORDER BY tenant_id NULLS FIRST, code`, tenantID)
 	if err != nil {
 		return nil, err
@@ -226,7 +227,7 @@ func (s *Service) UpdateRole(ctx context.Context, cmd UpdateRoleCmd) error {
 	var curScope string
 	if err := pool.QueryRow(ctx,
 		`SELECT is_builtin, tenant_id, data_scope FROM public.role
-		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2)`,
+		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2) AND deleted_at IS NULL`,
 		cmd.RoleID, cmd.TenantID).Scan(&isBuiltin, &roleTenant, &curScope); err != nil {
 		return errors.New(errors.KindNotFound, "iam.role_not_found", "角色不存在")
 	}
@@ -269,7 +270,7 @@ func (s *Service) UpdateRole(ctx context.Context, cmd UpdateRoleCmd) error {
 			}
 			sql += ss
 		}
-		sql += " WHERE id = $1"
+		sql += " WHERE id = $1 AND deleted_at IS NULL"
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return errors.Wrap(errors.KindDatabase, "iam.update_role_failed", "更新角色失败", err)
 		}
@@ -318,7 +319,7 @@ func (s *Service) DeleteRole(ctx context.Context, tenantID, roleID kernel.ID) er
 	pool := s.repo.(*pgRepo).pool
 	var isBuiltin bool
 	if err := pool.QueryRow(ctx,
-		`SELECT is_builtin FROM public.role WHERE id = $1 AND tenant_id = $2`,
+		`SELECT is_builtin FROM public.role WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
 		roleID, tenantID).Scan(&isBuiltin); err != nil {
 		// No such tenant-owned role (could be a built-in template with NULL tenant_id).
 		return errors.New(errors.KindForbidden, "iam.cannot_delete_role", "内置角色不可删除")
@@ -327,7 +328,9 @@ func (s *Service) DeleteRole(ctx context.Context, tenantID, roleID kernel.ID) er
 		return errors.New(errors.KindForbidden, "iam.cannot_delete_role", "内置角色不可删除")
 	}
 	res, err := pool.Exec(ctx,
-		`DELETE FROM public.role WHERE id = $1 AND tenant_id = $2`, roleID, tenantID)
+		`UPDATE public.role
+		 SET deleted_at = now()
+		 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, roleID, tenantID)
 	if err != nil {
 		return err
 	}

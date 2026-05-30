@@ -41,6 +41,7 @@ func (s *Service) ListPosts(ctx context.Context, pool *pgxpool.Pool, t *Tenant) 
 		`SELECT id, code, name, order_num, status,
 		        to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')
 		 FROM post
+		 WHERE deleted_at IS NULL
 		 ORDER BY order_num, code`)
 	if err != nil {
 		return nil, err
@@ -160,7 +161,7 @@ func (s *Service) UpdatePost(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 		}
 		sql += ss
 	}
-	sql += " WHERE id = $1"
+	sql += " WHERE id = $1 AND deleted_at IS NULL"
 	res, err := tx.Exec(ctx, sql, args...)
 	if err != nil {
 		return errors.Wrap(errors.KindDatabase, "tenancy.update_post_failed", "更新岗位失败", err)
@@ -193,7 +194,10 @@ func (s *Service) DeletePost(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 	if assigned > 0 {
 		return errors.New(errors.KindParam, "tenancy.post_in_use", "岗位已分配给成员,无法删除")
 	}
-	res, err := tx.Exec(ctx, `DELETE FROM post WHERE id = $1`, id)
+	res, err := tx.Exec(ctx,
+		`UPDATE post
+		 SET deleted_at = now(), status = 'disabled'
+		 WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
@@ -204,8 +208,8 @@ func (s *Service) DeletePost(ctx context.Context, pool *pgxpool.Pool, t *Tenant,
 }
 
 // registerPostRoutes mounts /admin/posts/* (tenant_admin gated by the caller).
-func registerPostRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
-	r.GET("/admin/posts", func(c *gin.Context) {
+func registerPostRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
+	r.GET("/admin/posts", authz("post", "read"), func(c *gin.Context) {
 		posts, err := svc.ListPosts(c.Request.Context(), pool, tenantFromCtx(c))
 		if err != nil {
 			apiresp.Fail(c, err)
@@ -214,7 +218,7 @@ func registerPostRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"posts": posts})
 	})
 
-	r.POST("/admin/posts", func(c *gin.Context) {
+	r.POST("/admin/posts", authz("post", "write"), func(c *gin.Context) {
 		var req struct {
 			Code     string `json:"code" binding:"required"`
 			Name     string `json:"name" binding:"required"`
@@ -234,7 +238,7 @@ func registerPostRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.Created(c, post)
 	})
 
-	r.PATCH("/admin/posts/:id", func(c *gin.Context) {
+	r.PATCH("/admin/posts/:id", authz("post", "write"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "岗位 ID 无效", err))
@@ -258,7 +262,7 @@ func registerPostRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/posts/:id", func(c *gin.Context) {
+	r.DELETE("/admin/posts/:id", authz("post", "write"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "岗位 ID 无效", err))

@@ -443,7 +443,7 @@ func (s *Service) GrantRoleByID(ctx context.Context, memberID, tenantID, roleID 
 	var exists bool
 	if err := pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM public.role
-		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2))`,
+		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2) AND deleted_at IS NULL)`,
 		roleID, tenantID).Scan(&exists); err != nil {
 		return err
 	}

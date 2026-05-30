@@ -60,5 +60,5 @@ func (m *Module) Manifest() module.Manifest {
 // route by the module's declared RBAC permissions via deps.Authz.
 // Legacy /api/plans /api/reports /api/rollups stays wired in app.go for now.
 func (m *Module) RegisterRoutes(api *gin.RouterGroup, deps module.Deps) {
-	okriface.RegisterRoutes(api, m.app, deps.Authz)
+	okriface.RegisterRoutes(api, m.app, deps.Authz, deps.Tenant, deps.DataScope)
 }

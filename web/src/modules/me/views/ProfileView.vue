@@ -8,7 +8,7 @@
         <div>
           <div class="display-name">{{ auth.user?.username || '—' }}</div>
           <div class="display-sub">
-            <span v-if="admin.is_platform_admin" class="role-tag platform">平台管理员</span>
+            <span v-if="admin.has_platform_access" class="role-tag platform">平台角色</span>
             <span v-else-if="admin.is_tenant_admin" class="role-tag tenant">租户管理员</span>
             <span v-else class="role-tag">成员</span>
             <span class="separator">·</span>
@@ -60,7 +60,7 @@ import { useAuthStore } from "@/shell/auth/auth.store";
 import { getMyAdminFlags, type MeAdmin } from "@/modules/admin/api/admin";
 
 const auth = useAuthStore();
-const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false });
+const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false, has_platform_access: false });
 
 onMounted(async () => {
   admin.value = await getMyAdminFlags();

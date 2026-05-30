@@ -74,6 +74,11 @@ func RateLimit(rdb *redis.Client, cfg RateLimitConfig) gin.HandlerFunc {
 				deny(c, ra, "user_per_min")
 				return
 			}
+		} else if uid, ok := kernel.PlatformUserIDFromContext(ctx); ok && uid != "" {
+			if ok, ra := check("u:"+string(uid), cfg.UserPerMin); !ok {
+				deny(c, ra, "user_per_min")
+				return
+			}
 		} else {
 			// Anonymous → throttle by IP for public endpoints
 			ip := c.ClientIP()

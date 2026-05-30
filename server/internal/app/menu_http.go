@@ -240,8 +240,8 @@ func (a *App) RegisterMeMenuRoutes(r *gin.RouterGroup) {
 
 // RegisterTenantMenuCatalogRoute mounts GET /admin/menus — the COMPLETE tenant
 // console tree (unfiltered) for the role editor. Wire on the admin group.
-func (a *App) RegisterTenantMenuCatalogRoute(r *gin.RouterGroup) {
-	r.GET("/admin/menus", func(c *gin.Context) {
+func (a *App) RegisterTenantMenuCatalogRoute(r *gin.RouterGroup, authz func(resource, action string) gin.HandlerFunc) {
+	r.GET("/admin/menus", authz("role", "read"), func(c *gin.Context) {
 		nodes := []module.MenuNode{}
 		for _, n := range a.allMenus() {
 			if consoleMatches(n, "tenant") {
@@ -254,8 +254,8 @@ func (a *App) RegisterTenantMenuCatalogRoute(r *gin.RouterGroup) {
 
 // RegisterPlatformMenuCatalogRoute mounts GET /platform/menus — the COMPLETE
 // platform console tree (unfiltered) for the role editor. Wire on the platform group.
-func (a *App) RegisterPlatformMenuCatalogRoute(r *gin.RouterGroup) {
-	r.GET("/platform/menus", func(c *gin.Context) {
+func (a *App) RegisterPlatformMenuCatalogRoute(r *gin.RouterGroup, authz func(resource, action string) gin.HandlerFunc) {
+	r.GET("/platform/menus", authz("menu", "read"), func(c *gin.Context) {
 		nodes := []module.MenuNode{}
 		for _, n := range a.allMenus() {
 			if consoleMatches(n, "platform") {

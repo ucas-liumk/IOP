@@ -84,7 +84,8 @@ func (p *SchemaProvisioner) Provision(ctx context.Context, schemaName string) er
 	return nil
 }
 
-// Drop is used for tenant close; CASCADE removes all per-tenant data.
+// Drop is only used to roll back a failed provisioning attempt; tenant close is
+// a logical status change and must not physically remove tenant data.
 func (p *SchemaProvisioner) Drop(ctx context.Context, schemaName string) error {
 	if !schemaNameRe.MatchString(schemaName) {
 		return errors.New(errors.KindParam, "tenancy.invalid_schema_name", "schema name invalid")
