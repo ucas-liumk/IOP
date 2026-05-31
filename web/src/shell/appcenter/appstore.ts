@@ -10,12 +10,22 @@ export interface MenuNode {
   title: string;
   icon: string;     // SVG path data
   path: string;     // frontend route ("" for dir nodes)
+  component?: string;
   parent: string;   // parent key ("" = top level)
-  type: string;     // "dir" | "menu" | "button"
+  type: string;     // "dir" | "menu" | "button" | "link" | "iframe" | "micro"
   console: string;  // "platform" | "tenant" | "both"
   app: string;      // owning module code ("" for built-in)
   perm: string;     // "resource:action" ("" = login/App only)
   order: number;
+  visible?: boolean;
+  cacheable?: boolean;
+  status?: string;
+  built_in?: boolean;
+  tenant_enabled?: boolean;
+  external_url?: string;
+  iframe_url?: string;
+  micro_app_code?: string;
+  micro_entry?: string;
 }
 export interface Manifest {
   code: string;
@@ -41,6 +51,20 @@ export async function getMyApps(): Promise<Manifest[]> {
   return r.data?.data?.apps ?? [];
 }
 
+// Per-user workspace mutations — any logged-in user curates their own apps.
+export async function addMyApp(code: string) {
+  await client.post(`/me/apps/${code}`);
+}
+
+export async function removeMyApp(code: string) {
+  await client.delete(`/me/apps/${code}`);
+}
+
+export async function setMyAppOrder(codes: string[]) {
+  await client.put("/me/apps/order", { codes });
+}
+
+// Tenant-admin install/uninstall — kept for admin surfaces that may reference them.
 export async function installApp(code: string) {
   await client.post(`/admin/apps/${code}/install`);
 }

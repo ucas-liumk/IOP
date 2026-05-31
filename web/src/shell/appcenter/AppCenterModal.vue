@@ -20,17 +20,31 @@
           <!-- 我的应用 -->
           <div class="ac-sec-head">
             <span class="t">我的应用</span>
-            <span class="hint">{{ myApps.length }} 个已安装 · 点击进入</span>
+            <span class="hint">{{ myApps.length }} 个 · 拖动排序 · 点击进入</span>
           </div>
           <div v-if="myApps.length > 0" class="my-apps-strip">
-            <button v-for="a in myApps" :key="a.code" class="my-tile" @click="$emit('navigate', appHomeRoute(a.code))">
+            <div
+              v-for="(a, i) in myApps"
+              :key="a.code"
+              class="my-tile"
+              :class="{ 'is-drag': dragIndex === i, 'is-over': overIndex === i }"
+              draggable="true"
+              @dragstart="onDragStart(i)"
+              @dragover.prevent="onDragOver(i)"
+              @drop.prevent="onDrop(i)"
+              @dragend="onDragEnd"
+              @click="$emit('navigate', appHomeRoute(a.code))"
+            >
               <div class="m-ico" :style="{ background: a.color }">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path :d="a.icon"/></svg>
               </div>
               <div class="m-name">{{ a.name }}</div>
-            </button>
+              <span class="m-grip" title="拖动排序">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+              </span>
+            </div>
           </div>
-          <div v-else class="empty-row">尚无安装应用 · 在下方应用市场添加</div>
+          <div v-else class="empty-row">尚无应用 · 在下方应用市场添加</div>
 
           <!-- 应用市场 -->
           <div v-for="(apps, cat) in catalogByCategory" :key="cat" class="cat-block">
@@ -44,13 +58,13 @@
                 v-for="a in apps"
                 :key="a.code"
                 class="app-cell"
-                :class="{ 'is-installed': a.installed }"
+                :class="{ 'is-installed': isMine(a.code) }"
                 @click="toggle(a)"
               >
                 <div class="c-ico" :style="{ background: a.color }">
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path :d="a.icon"/></svg>
                 </div>
-                <span v-if="a.installed" class="c-action c-added">✓</span>
+                <span v-if="isMine(a.code)" class="c-action c-added">✓</span>
                 <span v-else class="c-action c-add">+</span>
                 <div class="c-name">{{ a.name }}</div>
                 <div class="c-version">v{{ a.version }}</div>
@@ -80,7 +94,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { getCatalog, installApp, uninstallApp, appHomeRoute, type CatalogEntry, type Manifest } from "./appstore";
+import { getCatalog, getMyApps, addMyApp, removeMyApp, setMyAppOrder, appHomeRoute, type CatalogEntry, type Manifest } from "./appstore";
 import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
 
@@ -92,19 +106,21 @@ defineEmits<{ (e: "close"): void; (e: "navigate", path: string): void }>();
 
 const q = ref("");
 const catalog = ref<CatalogEntry[]>([]);
+// myApps is the user's own ordered workspace, driven by /me/apps (not the
+// tenant-wide installed flag) so drag-reorder maps 1:1 to setMyAppOrder.
+const myApps = ref<Manifest[]>([]);
 const loading = ref(false);
 
 // Future-app placeholders to make the marketplace feel populated.
 const comingSoon = ref<Manifest[]>([
   { code: "approval", name: "审批流程", description: "通用审批引擎", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11", color: "var(--cat-collab)", category: "协同办公", version: "0.9.0", permissions: [], events: [] },
   { code: "crm", name: "客户管理 CRM", description: "销售线索到合同", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-biz)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
-  { code: "order", name: "订单管理", description: "销售订单全生命周期", icon: "M9 21h9.5l1.5-13H4l1.5 13z", color: "var(--cat-biz)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
   { code: "finance", name: "财务管理", description: "收支与对账", icon: "M12 1v23M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6", color: "var(--cat-finance)", category: "财务税务", version: "0.5.0", permissions: [], events: [] },
   { code: "hr", name: "HR 一体化", description: "人事考勤薪酬", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-hr)", category: "人力资源", version: "0.5.0", permissions: [], events: [] },
   { code: "report", name: "报表中心", description: "跨应用数据看板", icon: "M18 20V10M12 20V4M6 20v-6", color: "var(--cat-data)", category: "数据分析", version: "0.5.0", permissions: [], events: [] },
 ]);
 
-const myApps = computed(() => catalog.value.filter((a) => a.installed));
+const myCodes = computed(() => new Set(myApps.value.map((a) => a.code)));
 const filtered = computed(() => {
   if (!q.value) return catalog.value;
   return catalog.value.filter((a) =>
@@ -119,28 +135,71 @@ const catalogByCategory = computed(() => {
   return out;
 });
 
+// A catalog cell is "added" when it is in the user's own workspace.
+function isMine(code: string): boolean {
+  return myCodes.value.has(code);
+}
+
 onMounted(reload);
 watch(() => props.open, (v) => { if (v) reload(); });
 
 async function reload() {
   loading.value = true;
-  try { catalog.value = await getCatalog(); }
-  catch { catalog.value = []; }
-  finally { loading.value = false; }
+  try {
+    const [cat, mine] = await Promise.all([getCatalog(), getMyApps()]);
+    catalog.value = cat;
+    myApps.value = mine;
+  } catch {
+    catalog.value = [];
+    myApps.value = [];
+  } finally {
+    loading.value = false;
+  }
 }
 
 async function toggle(a: CatalogEntry) {
   try {
-    if (a.installed) {
+    if (isMine(a.code)) {
       if (!(await confirm({ title: "确认", message: `从工作台移除 "${a.name}"？`, danger: true }))) return;
-      await uninstallApp(a.code);
+      await removeMyApp(a.code);
     } else {
-      await installApp(a.code);
+      await addMyApp(a.code);
     }
     await reload();
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "操作失败");
   }
+}
+
+// --- drag-to-reorder for "我的应用" ---
+const dragIndex = ref<number | null>(null);
+const overIndex = ref<number | null>(null);
+
+function onDragStart(i: number) {
+  dragIndex.value = i;
+  overIndex.value = i;
+}
+function onDragOver(i: number) {
+  overIndex.value = i;
+}
+async function onDrop(i: number) {
+  const from = dragIndex.value;
+  onDragEnd();
+  if (from === null || from === i) return;
+  const next = myApps.value.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(i, 0, moved);
+  myApps.value = next;
+  try {
+    await setMyAppOrder(next.map((a) => a.code));
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "排序保存失败");
+    await reload();
+  }
+}
+function onDragEnd() {
+  dragIndex.value = null;
+  overIndex.value = null;
 }
 </script>
 
@@ -233,10 +292,22 @@ async function toggle(a: CatalogEntry) {
   padding: 10px 4px 8px;
   border-radius: 10px;
   background: transparent; border: 0;
-  cursor: pointer;
-  transition: background .12s, box-shadow .12s;
+  cursor: grab;
+  transition: background .12s, box-shadow .12s, opacity .12s;
 }
 .my-tile:hover { background: var(--surface); box-shadow: var(--sh-1); }
+.my-tile:active { cursor: grabbing; }
+.my-tile.is-drag { opacity: .4; }
+.my-tile.is-over { background: var(--primary-soft); box-shadow: inset 0 0 0 1.5px var(--primary); }
+.my-tile .m-grip {
+  position: absolute;
+  top: 5px; right: 5px;
+  color: var(--text-4);
+  opacity: 0;
+  transition: opacity .12s;
+  pointer-events: none;
+}
+.my-tile:hover .m-grip { opacity: 1; }
 .my-tile .m-ico {
   width: 44px; height: 44px;
   border-radius: 12px;
