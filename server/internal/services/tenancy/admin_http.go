@@ -38,7 +38,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 			p.PageSize = 100
 		}
 		t := &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
-		cmd := ListMembersCmd{Page: p, Search: c.Query("search"), Subtree: c.Query("subtree") == "true"}
+		cmd := ListMembersCmd{Page: p, Search: c.Query("search"), Status: c.Query("status"), Subtree: c.Query("subtree") == "true"}
 		if dq := c.Query("dept_id"); dq != "" {
 			did, err := kernel.ParseID(dq)
 			if err != nil {
@@ -63,6 +63,40 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		})
 	})
 
+	r.GET("/admin/members/grouped", authz("member", "read"), func(c *gin.Context) {
+		tc, _ := tenantdb.FromContext(c.Request.Context())
+		cmd := ListMembersCmd{Search: c.Query("search"), Status: c.Query("status"), Subtree: c.Query("subtree") == "true"}
+		if dq := c.Query("dept_id"); dq != "" {
+			did, err := kernel.ParseID(dq)
+			if err != nil {
+				apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_dept_id", "dept_id 无效", err))
+				return
+			}
+			cmd.DeptID = &did
+		}
+		tree, err := svc.GroupMembers(c.Request.Context(), pool, &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}, cmd)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"tree": tree})
+	})
+
+	r.GET("/admin/members/detail/:id", authz("member", "read"), func(c *gin.Context) {
+		tc, _ := tenantdb.FromContext(c.Request.Context())
+		mid, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "成员 ID 无效", err))
+			return
+		}
+		row, err := svc.GetMember(c.Request.Context(), pool, &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}, mid)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, row)
+	})
+
 	r.PATCH("/admin/members/:id", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
 		mid, err := kernel.ParseID(c.Param("id"))
@@ -78,6 +112,10 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 			Department  *string `json:"department"`
 			Title       *string `json:"title"`
 			Phone       *string `json:"phone"`
+			Email       *string `json:"email"`
+			Gender      *string `json:"gender"`
+			Remark      *string `json:"remark"`
+			Status      *string `json:"status"`
 			DeptID      *string `json:"dept_id"`
 		}
 		if len(raw) > 0 {
@@ -89,6 +127,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		cmd := UpdateMemberCmd{
 			MemberID: mid, DisplayName: req.DisplayName,
 			Department: req.Department, Title: req.Title, Phone: req.Phone,
+			Email: req.Email, Gender: req.Gender, Remark: req.Remark,
 		}
 		var present map[string]json.RawMessage
 		if len(raw) > 0 {
@@ -109,6 +148,12 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 		if err := svc.UpdateMember(c.Request.Context(), pool, t, cmd); err != nil {
 			apiresp.Fail(c, err)
 			return
+		}
+		if req.Status != nil {
+			if err := svc.SetMemberStatus(c.Request.Context(), pool, t, mid, *req.Status); err != nil {
+				apiresp.Fail(c, err)
+				return
+			}
 		}
 		apiresp.OK(c, gin.H{"ok": true})
 	})
@@ -162,7 +207,11 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 
 	r.POST("/admin/members/:id/disable", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
-		mid, _ := kernel.ParseID(c.Param("id"))
+		mid, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "成员 ID 无效", err))
+			return
+		}
 		t := &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
 		if err := svc.SetMemberStatus(c.Request.Context(), pool, t, mid, "disabled"); err != nil {
 			apiresp.Fail(c, err)
@@ -173,7 +222,11 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, a
 
 	r.POST("/admin/members/:id/enable", authz("member", "write"), func(c *gin.Context) {
 		tc, _ := tenantdb.FromContext(c.Request.Context())
-		mid, _ := kernel.ParseID(c.Param("id"))
+		mid, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "成员 ID 无效", err))
+			return
+		}
 		t := &Tenant{ID: kernel.ID(tc.ID), Slug: tc.Slug, SchemaName: tc.SchemaName, Status: tc.Status}
 		if err := svc.SetMemberStatus(c.Request.Context(), pool, t, mid, "active"); err != nil {
 			apiresp.Fail(c, err)

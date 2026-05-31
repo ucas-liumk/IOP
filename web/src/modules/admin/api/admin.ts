@@ -56,28 +56,35 @@ export async function getMyAdminFlags(): Promise<MeAdmin> {
 }
 
 export interface MemberPost { post_id: string; code: string; name: string }
+export interface MemberRole { role_id: string; code: string; name: string }
 export interface Member {
   member_id: string; platform_user_id: string;
   // username is the primary login identity (joined from platform_user); email is
   // optional and often NULL — never use it as the primary display identifier.
   username: string;
   display_name: string; email?: string;
-  department: string; dept_id?: string | null; title: string; phone: string;
+  department: string; dept_id?: string | null; dept_code?: string; dept_path?: string;
+  title: string; phone: string; gender?: string; remark?: string;
   status: string; joined_at: string;
   posts: MemberPost[];
+  roles?: MemberRole[];
 }
 export interface ListMembersParams {
   search?: string;
+  status?: string;
   dept_id?: string;
   subtree?: boolean;
+  ids?: string[];
 }
 export async function listMembers(params: ListMembersParams | string = {}): Promise<Member[]> {
   // Back-compat: a bare string is treated as the search term.
   const p: ListMembersParams = typeof params === "string" ? { search: params } : params;
   const query: Record<string, string> = {};
   if (p.search) query.search = p.search;
+  if (p.status) query.status = p.status;
   if (p.dept_id) query.dept_id = p.dept_id;
   if (p.subtree) query.subtree = "true";
+  if (p.ids?.length) query.ids = p.ids.join(",");
   const r = await client.get("/admin/members", { params: query });
   return r.data?.data?.members ?? [];
 }
@@ -86,8 +93,10 @@ export interface ListMembersPagedParams {
   page?: number;
   pageSize?: number;
   search?: string;
+  status?: string;
   deptId?: string | null;
   subtree?: boolean;
+  ids?: string[];
 }
 // Server-side paginated member listing. Returns the typed page envelope; the
 // server caps page_size at 100.
@@ -97,8 +106,10 @@ export async function listMembersPaged(p: ListMembersPagedParams = {}): Promise<
     page_size: p.pageSize ?? 20,
   };
   if (p.search) query.search = p.search;
+  if (p.status) query.status = p.status;
   if (p.deptId) query.dept_id = p.deptId;
   if (p.subtree) query.subtree = "true";
+  if (p.ids?.length) query.ids = p.ids.join(",");
   const r = await client.get("/admin/members", { params: query });
   const d = r.data?.data ?? {};
   return {
@@ -110,11 +121,17 @@ export async function listMembersPaged(p: ListMembersPagedParams = {}): Promise<
 }
 
 // Member CSV export / template download + import (member:write gated server-side).
-export function downloadMembersCsv(): Promise<void> {
-  return downloadFile("/admin/members/export", "members.csv");
+export function downloadMembersCsv(params: ListMembersPagedParams = {}): Promise<void> {
+  return downloadFile("/admin/members/export", "members.xlsx", {
+    search: params.search,
+    status: params.status,
+    dept_id: params.deptId ?? undefined,
+    subtree: params.subtree,
+    ids: params.ids?.join(","),
+  });
 }
 export function downloadMembersTemplate(): Promise<void> {
-  return downloadFile("/admin/members/template", "members_template.csv");
+  return downloadFile("/admin/members/template", "members_template.xlsx");
 }
 export function importMembers(file: File): Promise<BulkResult> {
   return uploadCsv("/admin/members/import", file);
@@ -123,15 +140,26 @@ export function importMembers(file: File): Promise<BulkResult> {
 // "" / null to clear, an id to assign. Pass `dept_id` key only when changing it.
 export async function updateMember(
   id: string,
-  patch: Partial<Pick<Member, "display_name" | "department" | "title" | "phone">> & { dept_id?: string | null },
+  patch: Partial<Pick<Member, "display_name" | "department" | "title" | "phone" | "email" | "gender" | "remark" | "status">> & { dept_id?: string | null },
 ) {
   await client.patch(`/admin/members/${id}`, patch);
+}
+export async function createMember(payload: {
+  username: string; display_name: string; phone?: string; email?: string; gender?: string;
+  dept_id: string; title?: string; role_codes?: string[]; post_ids?: string[];
+  status?: string; password?: string; remark?: string;
+}): Promise<Member> {
+  const r = await client.post("/admin/members", payload);
+  return r.data?.data as Member;
 }
 export async function setMemberDept(id: string, deptId: string | null) {
   await client.patch(`/admin/members/${id}`, { dept_id: deptId ?? "" });
 }
 export async function setMemberDisabled(id: string, disabled: boolean) {
   await client.post(`/admin/members/${id}/${disabled ? 'disable' : 'enable'}`);
+}
+export async function resetMemberPassword(id: string, newPassword: string) {
+  await client.post(`/admin/members/${id}/reset-password`, { new_password: newPassword });
 }
 export async function assignMemberPost(memberId: string, postId: string) {
   await client.post(`/admin/members/${memberId}/posts`, { post_id: postId });
@@ -236,12 +264,22 @@ export interface MenuNode {
   title: string;
   icon: string;
   path: string;
+  component?: string;
   parent: string;
-  type: string;     // "dir" | "menu" | "button"
+  type: string;     // "dir" | "menu" | "button" | "link" | "iframe" | "micro"
   console: string;
   app: string;
   perm: string;     // "resource:action"; "" = no perm required
   order: number;
+  visible?: boolean;
+  cacheable?: boolean;
+  status?: string;
+  built_in?: boolean;
+  tenant_enabled?: boolean;
+  external_url?: string;
+  iframe_url?: string;
+  micro_app_code?: string;
+  micro_entry?: string;
   children?: MenuNode[];
 }
 export async function getTenantMenuTree(): Promise<MenuNode[]> {
@@ -250,20 +288,27 @@ export async function getTenantMenuTree(): Promise<MenuNode[]> {
 }
 
 export interface PolicyRule { resource: string; action: string; effect: string }
-export type DataScope = "all" | "dept" | "dept_and_sub" | "self" | "custom";
+export type DataScope = "all" | "tenant" | "dept" | "dept_and_sub" | "self" | "custom";
+export type RoleStatus = "active" | "disabled";
+export type RoleType = "platform" | "tenant";
 export interface Role {
   id: string; tenant_id?: string; code: string; name: string;
+  role_type: RoleType;
+  status: RoleStatus;
+  order_num: number;
+  remark?: string;
   built_in: boolean; member_count: number;
   data_scope: DataScope;
   dept_ids?: string[];
   policies: PolicyRule[] | null;
 }
-export async function listRoles(): Promise<Role[]> {
-  const r = await client.get("/admin/roles");
+export async function listRoles(params?: { q?: string; status?: string; role_type?: string }): Promise<Role[]> {
+  const r = await client.get("/admin/roles", { params });
   return r.data?.data?.roles ?? [];
 }
 export async function createRole(payload: {
-  code: string; name: string; data_scope?: DataScope; dept_ids?: string[];
+  code: string; name: string; role_type?: RoleType; data_scope?: DataScope; dept_ids?: string[];
+  status?: RoleStatus; order_num?: number; remark?: string;
 }): Promise<Role> {
   const r = await client.post("/admin/roles", payload);
   return r.data?.data as Role;
@@ -272,6 +317,7 @@ export async function createRole(payload: {
 // roles server-side). Omit a field to leave it unchanged.
 export async function updateRole(id: string, patch: {
   name?: string; code?: string; data_scope?: DataScope; dept_ids?: string[];
+  status?: RoleStatus; order_num?: number; remark?: string;
 }) {
   await client.patch(`/admin/roles/${id}`, patch);
 }
@@ -504,8 +550,8 @@ export async function listPlatformUsersPaged(p: ListPlatformUsersPagedParams = {
   };
 }
 export async function createPlatformUser(payload: {
-  username: string; real_name: string; phone?: string; password: string;
-  organization_id: string; role: "tenant_member" | "tenant_admin";
+  username: string; real_name: string; phone?: string; email?: string; password: string;
+  organization_id: string; dept_id?: string; role: "tenant_member" | "tenant_admin";
 }): Promise<PlatformUser> {
   const r = await client.post("/platform/users", payload);
   return r.data?.data;
@@ -569,7 +615,7 @@ export function tenantMemberApi(): MemberApi {
     listMembers: async (p: MemberListParams): Promise<MemberPage> => {
       const res = await listMembersPaged({
         page: p.page, pageSize: p.pageSize, search: p.search,
-        deptId: p.deptId, subtree: p.subtree,
+        status: p.status, deptId: p.deptId, subtree: p.subtree, ids: p.ids,
       });
       return { data: res.data as unknown as MemberRow[], total: res.total, page: res.page, pageSize: res.pageSize };
     },
@@ -583,8 +629,13 @@ export function tenantMemberApi(): MemberApi {
     grantRole: (m: MemberRow, code) => grantRoleToMember(m.member_id, code),
     revokeRole: (m: MemberRow, roleId) => revokeRoleFromMember(m.member_id, roleId),
     listPosts: () => listPosts(),
-    exportCsv: () => downloadMembersCsv(),
+    createMember: (payload) => createMember(payload as any) as unknown as Promise<MemberRow>,
+    updateMember: (memberId, patch) => updateMember(memberId, patch as any),
+    exportCsv: (p) => downloadMembersCsv({
+      page: p.page, pageSize: p.pageSize, search: p.search, status: p.status,
+      deptId: p.deptId, subtree: p.subtree, ids: p.ids,
+    }),
     setDisabled: (m: MemberRow, disabled) => setMemberDisabled(m.member_id, disabled),
-    resetPassword: (m: MemberRow, pw) => resetPlatformUserPassword(m.platform_user_id, pw),
+    resetPassword: (m: MemberRow, pw) => resetMemberPassword(m.member_id, pw),
   };
 }

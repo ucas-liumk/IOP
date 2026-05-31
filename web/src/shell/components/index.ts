@@ -16,6 +16,6 @@ export { default as DeptTreeManager } from "./DeptTreeManager.vue";
 export type { DeptApi, DeptRow, DeptTreeRow, DeptQuery, CreateDeptPayload, UpdateDeptPatch } from "./DeptTreeManager.vue";
 export { default as MemberManager } from "./MemberManager.vue";
 export type {
-  MemberApi, MemberRow, MemberPostRow, RoleRow, PostRow,
+  MemberApi, MemberRow, MemberPostRow, MemberRoleRow, RoleRow, PostRow,
   MemberDeptRow, MemberDeptTreeRow, MemberListParams, MemberPage,
 } from "./MemberManager.vue";

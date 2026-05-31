@@ -16,6 +16,32 @@
 
     <div v-if="role.built_in" class="builtin-note">🔒 内置角色不可修改，权限与数据范围已锁定。</div>
 
+    <section class="meta-grid" :class="{ locked: role.built_in }">
+      <label class="field">
+        <span class="label">角色名称</span>
+        <input class="input" v-model="metaName" :disabled="role.built_in" />
+      </label>
+      <label class="field">
+        <span class="label">角色编码</span>
+        <input class="input mono" v-model="metaCode" :disabled="role.built_in" />
+      </label>
+      <label class="field">
+        <span class="label">状态</span>
+        <select class="input" v-model="metaStatus" :disabled="role.built_in">
+          <option value="active">正常</option>
+          <option value="disabled">停用</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="label">排序</span>
+        <input class="input" type="number" v-model.number="metaOrder" :disabled="role.built_in" />
+      </label>
+      <label class="field field-wide">
+        <span class="label">备注</span>
+        <textarea class="input textarea" v-model="metaRemark" rows="2" :disabled="role.built_in" />
+      </label>
+    </section>
+
     <div class="editor-body">
       <!-- Menu permission tree -->
       <section class="re-section" :class="{ locked: role.built_in }">
@@ -89,7 +115,7 @@ import { TreeView } from "@/shell/components";
 import { useNotification } from "@/shell/notify";
 import {
   batchPolicy, updateRole,
-  type Role, type MenuNode, type Dept, type DataScope, type PolicyRule, type PolicyChange,
+  type Role, type MenuNode, type Dept, type DataScope, type RoleStatus, type PolicyRule, type PolicyChange,
 } from "../api/admin";
 
 const props = defineProps<{
@@ -108,6 +134,7 @@ const deptFilter = ref("");
 
 const scopeOptions: { value: DataScope; label: string }[] = [
   { value: "all", label: "全部数据" },
+  { value: "tenant", label: "本租户数据" },
   { value: "dept", label: "本部门" },
   { value: "dept_and_sub", label: "本部门及以下" },
   { value: "self", label: "仅本人" },
@@ -117,6 +144,11 @@ const scopeOptions: { value: DataScope; label: string }[] = [
 // --- working (mutable) state, accumulated locally until 保存 ---
 const dataScope = ref<DataScope>(props.role.data_scope ?? "all");
 const customDeptIds = ref<string[]>([...(props.role.dept_ids ?? [])]);
+const metaName = ref(props.role.name);
+const metaCode = ref(props.role.code);
+const metaStatus = ref<RoleStatus>(props.role.status ?? "active");
+const metaOrder = ref(props.role.order_num ?? 0);
+const metaRemark = ref(props.role.remark ?? "");
 // checkedKeys is the live set of checked menu-node keys (cascade-driven).
 const checkedKeys = ref<string[]>([]);
 
@@ -172,6 +204,11 @@ const initialKeys = ref<Set<string>>(new Set());
 function reset() {
   dataScope.value = props.role.data_scope ?? "all";
   customDeptIds.value = [...(props.role.dept_ids ?? [])];
+  metaName.value = props.role.name;
+  metaCode.value = props.role.code;
+  metaStatus.value = props.role.status ?? "active";
+  metaOrder.value = props.role.order_num ?? 0;
+  metaRemark.value = props.role.remark ?? "";
   const init = computeInitialChecked();
   checkedKeys.value = [...init];
   initialKeys.value = new Set(init);
@@ -222,6 +259,13 @@ function checkAll(value: boolean) {
 
 // dirty when the checked-key set or the data-scope/dept selection differs.
 const dirty = computed(() => {
+  if (!props.role.built_in) {
+    if (metaName.value !== props.role.name) return true;
+    if (metaCode.value !== props.role.code) return true;
+    if (metaStatus.value !== (props.role.status ?? "active")) return true;
+    if (Number(metaOrder.value ?? 0) !== Number(props.role.order_num ?? 0)) return true;
+    if (metaRemark.value !== (props.role.remark ?? "")) return true;
+  }
   const cur = new Set(checkedKeys.value);
   if (cur.size !== initialKeys.value.size) return true;
   for (const k of cur) if (!initialKeys.value.has(k)) return true;
@@ -262,6 +306,11 @@ async function save() {
     }
     // Persist data scope (and custom dept ids) in the same save action.
     await updateRole(props.role.id, {
+      name: metaName.value.trim(),
+      code: metaCode.value.trim(),
+      status: metaStatus.value,
+      order_num: Number(metaOrder.value ?? 0),
+      remark: metaRemark.value.trim(),
       data_scope: dataScope.value,
       dept_ids: dataScope.value === "custom" ? customDeptIds.value : [],
     });
@@ -289,6 +338,16 @@ function walk(nodes: MenuNode[], fn: (n: MenuNode) => void) {
 .re-sub { font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
 
 .builtin-note { font-size: 12.5px; color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.meta-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.meta-grid.locked { opacity: .72; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-wide { grid-column: 1 / -1; }
+.label { font-size: 11.5px; color: var(--text-3); }
+.input { padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); min-width: 0; }
+.input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.input:disabled { background: var(--surface-2); color: var(--text-3); }
+.mono { font-family: var(--ff-mono); }
+.textarea { resize: vertical; min-height: 54px; }
 .editor-body { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: start; }
 .re-section { display: flex; flex-direction: column; gap: 8px; }
 .re-section.locked { opacity: .7; }
@@ -318,6 +377,10 @@ function walk(nodes: MenuNode[], fn: (n: MenuNode) => void) {
 .check-list label { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
 .check-list label:hover { background: var(--surface-2); }
 .check-list input { accent-color: var(--primary); }
+@media (max-width: 900px) {
+  .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .editor-body { grid-template-columns: 1fr; }
+}
 .muted { color: var(--text-4); font-size: 12.5px; padding: 6px; }
 
 .btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }

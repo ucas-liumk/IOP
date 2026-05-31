@@ -93,6 +93,11 @@ func builtinMenus() []module.MenuNode {
 			Type: "menu", Console: "tenant", Perm: "app:read", Order: 33,
 			Icon: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
 		},
+		{
+			Key: "admin.menus", Title: "菜单管理", Path: "/admin/menus", Parent: "admin.system",
+			Type: "menu", Console: "tenant", Perm: "menu:read", Order: 34,
+			Icon: "M3 12h18M3 6h18M3 18h18",
+		},
 
 		// ===== Platform console (/platform/*) =====
 		{
@@ -133,7 +138,7 @@ func builtinMenus() []module.MenuNode {
 			Icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
 		},
 		{
-			Key: "platform.menus", Title: "菜单目录", Path: "/platform/menus", Parent: "platform.system",
+			Key: "platform.menus", Title: "菜单管理", Path: "/platform/menus", Parent: "platform.system",
 			Type: "menu", Console: "platform", Perm: "menu:read", Order: 21,
 			Icon: "M3 12h18M3 6h18M3 18h18",
 		},

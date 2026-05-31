@@ -91,7 +91,34 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 	})
 
 	r.GET("/platform/rbac/roles", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
-		roles, err := svc.ListPlatformRolesWithPolicies(c.Request.Context())
+		roles, err := svc.ListPlatformRolesWithPolicies(c.Request.Context(), RoleListFilter{
+			Search:   strings.TrimSpace(c.Query("q")),
+			Status:   strings.TrimSpace(c.Query("status")),
+			RoleType: "platform",
+		})
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"roles": roles})
+	})
+
+	r.GET("/platform/rbac/roles/all", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		var tid *kernel.ID
+		if raw := strings.TrimSpace(c.Query("tenant_id")); raw != "" {
+			id, err := kernel.ParseID(raw)
+			if err != nil {
+				apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_tenant_id", "tenant_id 无效", err))
+				return
+			}
+			tid = &id
+		}
+		roles, err := svc.ListAllRolesForPlatform(c.Request.Context(), RoleListFilter{
+			Search:   strings.TrimSpace(c.Query("q")),
+			Status:   strings.TrimSpace(c.Query("status")),
+			RoleType: strings.TrimSpace(c.Query("role_type")),
+			TenantID: tid,
+		})
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -101,14 +128,46 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 
 	r.POST("/platform/rbac/roles", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
 		var req struct {
-			Code string `json:"code" binding:"required"`
-			Name string `json:"name" binding:"required"`
+			Code     string `json:"code" binding:"required"`
+			Name     string `json:"name" binding:"required"`
+			Status   string `json:"status"`
+			OrderNum int    `json:"order_num"`
+			Remark   string `json:"remark"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
 			return
 		}
-		if err := svc.CreatePlatformRole(c.Request.Context(), req.Code, req.Name); err != nil {
+		role, err := svc.CreatePlatformRole(c.Request.Context(), CreatePlatformRoleCmd{
+			Code: req.Code, Name: req.Name, Status: req.Status, OrderNum: req.OrderNum, Remark: req.Remark,
+		})
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.Created(c, role)
+	})
+
+	r.PATCH("/platform/rbac/roles/:id", PlatformAuthz(svc, aud, "role", "manage"), func(c *gin.Context) {
+		id, err := kernel.ParseID(c.Param("id"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "id 无效", err))
+			return
+		}
+		var req struct {
+			Code     *string `json:"code"`
+			Name     *string `json:"name"`
+			Status   *string `json:"status"`
+			OrderNum *int    `json:"order_num"`
+			Remark   *string `json:"remark"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		if err := svc.UpdatePlatformRole(c.Request.Context(), id, UpdatePlatformRoleCmd{
+			Code: req.Code, Name: req.Name, Status: req.Status, OrderNum: req.OrderNum, Remark: req.Remark,
+		}); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
@@ -142,7 +201,7 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
 			return
 		}
-		if err := svc.repo.AddPlatformPolicy(c.Request.Context(), id, req.Resource, req.Action); err != nil {
+		if err := svc.AddPlatformPolicy(c.Request.Context(), id, req.Resource, req.Action); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
@@ -161,7 +220,7 @@ func RegisterPlatformRBACRoutes(r *gin.RouterGroup, svc *Service, aud *audit.Ser
 			apiresp.Fail(c, errors.New(errors.KindParam, "iam.invalid_request", "resource 和 action 必填"))
 			return
 		}
-		if err := svc.repo.RemovePlatformPolicy(c.Request.Context(), id, resource, action); err != nil {
+		if err := svc.RemovePlatformPolicy(c.Request.Context(), id, resource, action); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}

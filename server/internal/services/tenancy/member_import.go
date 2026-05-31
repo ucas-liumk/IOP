@@ -3,6 +3,7 @@ package tenancy
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -11,12 +12,14 @@ import (
 )
 
 // memberCSVHeader is the column order for member export/import/template.
-var memberCSVHeader = []string{"username", "display_name", "phone", "email", "department", "title", "status"}
+var memberCSVHeader = []string{"username", "display_name", "phone", "email", "gender", "org_code", "post_code", "role_code", "status", "initial_password", "remark"}
+
+var memberExportHeader = []string{"username", "display_name", "phone", "email", "gender", "org_code", "department", "org_path", "title", "posts", "roles", "status", "created_at", "remark"}
 
 // memberTemplateRows are illustrative sample rows for the member import template.
 var memberTemplateRows = [][]string{
-	{"zhangsan", "张三", "13800000001", "zhangsan@example.com", "技术部", "工程师", "active"},
-	{"lisi", "李四", "13800000002", "", "后端组", "组长", "active"},
+	{"zhangsan", "张三", "13800000001", "zhangsan@example.com", "male", "RD", "engineer", "tenant_member", "active", "", "研发部成员"},
+	{"lisi", "李四", "13800000002", "", "female", "ALG", "leader", "tenant_member", "active", "", "算法组成员"},
 }
 
 // MemberCSVHeader returns a copy of the member CSV column order.
@@ -30,47 +33,41 @@ func MemberTemplateRows() [][]string {
 	return out
 }
 
-// ExportMembers returns every member of the current tenant as CSV rows (header
-// first), matching memberCSVHeader. department is the member's stored department
-// name (the per-member display string), preferring the resolved dept tree name
-// when a dept_id is set.
-func (s *Service) ExportMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant) ([][]string, error) {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Release()
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %q, public", t.SchemaName)); err != nil {
-		return nil, err
-	}
-	rows, err := tx.Query(ctx,
-		`SELECT COALESCE(u.username,''), m.display_name, COALESCE(m.phone,''), COALESCE(m.email,''),
-		        COALESCE(d.name, m.department, ''), COALESCE(m.title,''), m.status
-		 FROM member m
-		 LEFT JOIN public.platform_user u ON u.id = m.platform_user_id
-		 LEFT JOIN department d ON d.id = m.dept_id AND d.deleted_at IS NULL
-		 ORDER BY m.joined_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := [][]string{MemberCSVHeader()}
-	for rows.Next() {
-		var username, displayName, phone, email, dept, title, status string
-		if err := rows.Scan(&username, &displayName, &phone, &email, &dept, &title, &status); err != nil {
+// ExportMembers returns members matching the current tenant-scoped filters as
+// spreadsheet rows (header first). Phone/email are masked because exports leave
+// the online permission boundary.
+func (s *Service) ExportMembers(ctx context.Context, pool *pgxpool.Pool, t *Tenant, cmd ListMembersCmd) ([][]string, error) {
+	out := [][]string{append([]string(nil), memberExportHeader...)}
+	cmd.Page = kernel.Pagination{Page: 1, PageSize: 200}
+	for {
+		page, err := s.ListMembers(ctx, pool, t, cmd)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, []string{username, displayName, phone, email, dept, title, status})
+		for _, m := range page.Data {
+			out = append(out, []string{
+				m.Username,
+				m.DisplayName,
+				maskPhone(m.Phone),
+				maskEmail(m.Email),
+				m.Gender,
+				m.DeptCode,
+				m.Department,
+				m.DeptPath,
+				m.Title,
+				memberPostsText(m.Posts),
+				memberRolesText(m.Roles),
+				m.Status,
+				m.JoinedAt,
+				m.Remark,
+			})
+		}
+		if len(page.Data) == 0 || cmd.Page.Page*cmd.Page.PageSize >= page.Total {
+			break
+		}
+		cmd.Page.Page++
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, tx.Commit(ctx)
+	return out, nil
 }
 
 // DeptNameToID returns a department-name → id map for the current tenant, used to
@@ -87,6 +84,38 @@ func (s *Service) DeptNameToID(ctx context.Context, pool *pgxpool.Pool, t *Tenan
 			continue
 		}
 		m[d.Name] = d.ID
+	}
+	return m, nil
+}
+
+// DeptCodeToID returns active org_code -> id mappings for the current tenant.
+func (s *Service) DeptCodeToID(ctx context.Context, pool *pgxpool.Pool, t *Tenant) (map[string]kernel.ID, error) {
+	flat, err := s.ListDepts(ctx, pool, t)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]kernel.ID, len(flat))
+	for _, d := range flat {
+		if d.Status != "active" {
+			continue
+		}
+		m[strings.ToLower(strings.TrimSpace(d.OrgCode))] = d.ID
+	}
+	return m, nil
+}
+
+// PostCodeToID returns active post code -> id mappings for the current tenant.
+func (s *Service) PostCodeToID(ctx context.Context, pool *pgxpool.Pool, t *Tenant) (map[string]kernel.ID, error) {
+	posts, err := s.ListPosts(ctx, pool, t)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]kernel.ID, len(posts))
+	for _, p := range posts {
+		if p.Status != "active" {
+			continue
+		}
+		m[strings.ToLower(strings.TrimSpace(p.Code))] = p.ID
 	}
 	return m, nil
 }
@@ -111,8 +140,8 @@ func (s *Service) SetMemberDept(ctx context.Context, pool *pgxpool.Pool, t *Tena
 		var count int
 		if err := tx.QueryRow(ctx,
 			`SELECT count(*) FROM department
-			 WHERE id = $1 AND deleted_at IS NULL AND status = 'active'`,
-			*deptID).Scan(&count); err != nil {
+			 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND status = 'active'`,
+			*deptID, t.ID).Scan(&count); err != nil {
 			return err
 		}
 		if count == 0 {
@@ -123,4 +152,45 @@ func (s *Service) SetMemberDept(ctx context.Context, pool *pgxpool.Pool, t *Tena
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func memberPostsText(posts []MemberPost) string {
+	codes := make([]string, 0, len(posts))
+	for _, p := range posts {
+		if p.Code != "" {
+			codes = append(codes, p.Code)
+		}
+	}
+	return strings.Join(codes, ",")
+}
+
+func memberRolesText(roles []MemberRole) string {
+	codes := make([]string, 0, len(roles))
+	for _, r := range roles {
+		if r.Code != "" {
+			codes = append(codes, r.Code)
+		}
+	}
+	return strings.Join(codes, ",")
+}
+
+func maskPhone(phone string) string {
+	phone = strings.TrimSpace(phone)
+	if len(phone) < 7 {
+		return phone
+	}
+	return phone[:3] + "****" + phone[len(phone)-4:]
+}
+
+func maskEmail(email string) string {
+	email = strings.TrimSpace(email)
+	at := strings.Index(email, "@")
+	if at <= 1 {
+		return email
+	}
+	prefix := email[:at]
+	if len(prefix) <= 2 {
+		return prefix[:1] + "*" + email[at:]
+	}
+	return prefix[:1] + strings.Repeat("*", len(prefix)-2) + prefix[len(prefix)-1:] + email[at:]
 }

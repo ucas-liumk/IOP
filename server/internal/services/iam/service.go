@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/leo/iop/server/internal/services/tenancy"
@@ -173,6 +174,9 @@ func (s *Service) SwitchTenant(ctx context.Context, sessionID, tenantID kernel.I
 	if mem == nil {
 		return nil, errors.New(errors.KindForbidden, "iam.not_a_member", "不是该租户成员")
 	}
+	if mem.Status != "active" {
+		return nil, errors.New(errors.KindForbidden, "iam.membership_disabled", "该租户账号已停用")
+	}
 	t, err := s.tenants.GetTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -207,6 +211,20 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	tid, mid := claims.TenantID, claims.MemberID
 	var tidP, midP *kernel.ID
 	if tid != "" {
+		mem, err := s.tenants.GetMembership(ctx, sess.PlatformUserID, tid)
+		if err != nil {
+			return nil, err
+		}
+		if mem == nil || mem.Status != "active" {
+			return nil, errors.New(errors.KindForbidden, "iam.membership_disabled", "该租户账号已停用")
+		}
+		t, err := s.tenants.GetTenant(ctx, tid)
+		if err != nil {
+			return nil, err
+		}
+		if t == nil || t.Status != tenancy.StatusActive {
+			return nil, errors.New(errors.KindForbidden, "iam.tenant_inactive", "租户不可用")
+		}
 		tidP = &tid
 	}
 	if mid != "" {
@@ -421,7 +439,20 @@ func (s *Service) MemberPerms(ctx context.Context, memberID, tenantID kernel.ID)
 
 // GrantRoleByCode grants a role (by code) to a member.
 func (s *Service) GrantRoleByCode(ctx context.Context, memberID, tenantID kernel.ID, roleCode string) error {
-	role, err := s.repo.GetRoleByCode(ctx, roleCode, nil)
+	roleCode = strings.TrimSpace(roleCode)
+	if !tenantMemberRoleGrantAllowed(roleCode) {
+		return errors.New(errors.KindForbidden, "iam.platform_role_forbidden", "不能给租户用户分配平台管理员角色")
+	}
+	if err := s.ensureTenantMemberExists(ctx, memberID, tenantID); err != nil {
+		return err
+	}
+	role, err := s.repo.GetRoleByCode(ctx, roleCode, &tenantID)
+	if err != nil {
+		return err
+	}
+	if role == nil {
+		role, err = s.repo.GetRoleByCode(ctx, roleCode, nil)
+	}
 	if err != nil {
 		return err
 	}
@@ -440,17 +471,48 @@ func (s *Service) GrantRoleByCode(ctx context.Context, memberID, tenantID kernel
 // is idempotent.
 func (s *Service) GrantRoleByID(ctx context.Context, memberID, tenantID, roleID kernel.ID) error {
 	pool := s.repo.(*pgRepo).pool
-	var exists bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM public.role
-		 WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2) AND deleted_at IS NULL)`,
-		roleID, tenantID).Scan(&exists); err != nil {
+	if err := s.ensureTenantMemberExists(ctx, memberID, tenantID); err != nil {
 		return err
 	}
-	if !exists {
-		return errors.New(errors.KindNotFound, "iam.role_not_found", "角色不存在")
+	var roleCode string
+	if err := pool.QueryRow(ctx,
+		`SELECT code FROM public.role
+		 WHERE id = $1 AND (tenant_id = $2 OR (tenant_id IS NULL AND code IN ('tenant_admin','tenant_member')))
+		   AND deleted_at IS NULL AND COALESCE(status,'active') = 'active'`,
+		roleID, tenantID).Scan(&roleCode); err != nil {
+		if err == pgx.ErrNoRows {
+			return errors.New(errors.KindNotFound, "iam.role_not_found", "角色不存在")
+		}
+		return err
+	}
+	if !tenantMemberRoleGrantAllowed(roleCode) {
+		return errors.New(errors.KindForbidden, "iam.platform_role_forbidden", "不能给租户用户分配平台管理员角色")
 	}
 	return s.repo.GrantRole(ctx, &RoleGrant{
 		RoleID: roleID, MemberID: memberID, TenantID: tenantID, GrantedAt: s.clock.Now(),
 	})
+}
+
+func (s *Service) ensureTenantMemberExists(ctx context.Context, memberID, tenantID kernel.ID) error {
+	pool := s.repo.(*pgRepo).pool
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM public.tenant_membership
+		 WHERE member_id = $1 AND tenant_id = $2)`,
+		memberID, tenantID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New(errors.KindNotFound, "iam.member_not_found", "成员不存在")
+	}
+	return nil
+}
+
+func tenantMemberRoleGrantAllowed(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "", "super_admin", "platform_admin", "sys_admin", "sec_admin", "audit_admin":
+		return false
+	default:
+		return true
+	}
 }

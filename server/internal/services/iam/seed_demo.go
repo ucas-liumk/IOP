@@ -31,11 +31,11 @@ func DemoSeedForced() bool {
 var demoSeedNamespace = uuid.MustParse("a1b2c3d4-0000-4000-8000-0000000b1900")
 
 const (
-	demoTenantSlug  = "bjgov"
-	demoTenantName  = "北京市人民政府"
-	demoAdminUser   = "bjadmin"
-	demoUserPwd     = "Bjgov12345!" // dev demo password for every seeded公务员 (incl. bjadmin)
-	demoUserPrefix  = "bjgov"
+	demoTenantSlug = "bjgov"
+	demoTenantName = "北京市人民政府"
+	demoAdminUser  = "bjadmin"
+	demoUserPwd    = "Bjgov12345!" // dev demo password for every seeded公务员 (incl. bjadmin)
+	demoUserPrefix = "bjgov"
 )
 
 // demoDept is a node in the seed department tree. Children are realized recursively;

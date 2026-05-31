@@ -65,7 +65,7 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 	read := func() gin.HandlerFunc { return PlatformAuthz(svc, aud, "user", "read") }
 	write := func() gin.HandlerFunc { return PlatformAuthz(svc, aud, "user", "write") }
 
-	// --- CSV export / template / import. Registered before the parameterized
+	// --- Spreadsheet export / template / import. Registered before the parameterized
 	// :mid routes so the literal sub-paths take precedence. ---
 
 	r.GET("/platform/orgs/:tid/members/export", read(), func(c *gin.Context) {
@@ -73,12 +73,16 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		if !ok {
 			return
 		}
-		rows, err := svc.tenants.ExportMembers(c.Request.Context(), pool, t)
+		cmd, ok := memberListCmdFromQuery(c)
+		if !ok {
+			return
+		}
+		rows, err := svc.tenants.ExportMembers(c.Request.Context(), pool, t, cmd)
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.CSV(c, "members.csv", rows)
+		apiresp.XLSX(c, "members.xlsx", rows)
 	})
 
 	r.GET("/platform/orgs/:tid/members/template", read(), func(c *gin.Context) {
@@ -87,7 +91,7 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		if _, ok := orgTenantFromParam(c, svc); !ok {
 			return
 		}
-		apiresp.CSV(c, "members_template.csv", tenancy.MemberTemplateRows())
+		apiresp.XLSX(c, "members_template.xlsx", tenancy.MemberTemplateRows())
 	})
 
 	r.POST("/platform/orgs/:tid/members/import", write(), func(c *gin.Context) {
@@ -95,17 +99,39 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		if !ok {
 			return
 		}
-		records, err := apiresp.ParseCSVUpload(c, "file")
+		records, err := apiresp.ParseTabularUpload(c, "file")
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
-		res, err := svc.ImportMembers(c.Request.Context(), pool, t, records)
+		res, err := svc.ImportMembers(c.Request.Context(), pool, t, records, memberImportOptionsFromRequest(c))
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
 		}
 		apiresp.OK(c, res)
+	})
+
+	r.POST("/platform/orgs/:tid/members", write(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		var req memberCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		cmd, ok := createMemberCmdFromRequest(c, req)
+		if !ok {
+			return
+		}
+		row, err := svc.CreateTenantMember(c.Request.Context(), pool, t, cmd)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, row)
 	})
 
 	// --- Paged member listing. ---
@@ -124,6 +150,7 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		cmd := tenancy.ListMembersCmd{
 			Page:    p,
 			Search:  c.Query("search"),
+			Status:  c.Query("status"),
 			Subtree: c.Query("subtree") == "true",
 		}
 		if dq := c.Query("dept_id"); dq != "" {
@@ -148,6 +175,41 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		})
 	})
 
+	r.GET("/platform/orgs/:tid/members/grouped", read(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		cmd, ok := memberListCmdFromQuery(c)
+		if !ok {
+			return
+		}
+		tree, err := svc.tenants.GroupMembers(c.Request.Context(), pool, t, cmd)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"tree": tree})
+	})
+
+	r.GET("/platform/orgs/:tid/members/:mid", read(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		mid, err := kernel.ParseID(c.Param("mid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "成员 ID 无效", err))
+			return
+		}
+		row, err := svc.tenants.GetMember(c.Request.Context(), pool, t, mid)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, row)
+	})
+
 	// --- Per-member mutations. ---
 
 	r.PATCH("/platform/orgs/:tid/members/:mid", write(), func(c *gin.Context) {
@@ -168,6 +230,10 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 			Department  *string `json:"department"`
 			Title       *string `json:"title"`
 			Phone       *string `json:"phone"`
+			Email       *string `json:"email"`
+			Gender      *string `json:"gender"`
+			Remark      *string `json:"remark"`
+			Status      *string `json:"status"`
 			DeptID      *string `json:"dept_id"`
 		}
 		if len(raw) > 0 {
@@ -179,6 +245,7 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 		cmd := tenancy.UpdateMemberCmd{
 			MemberID: mid, DisplayName: req.DisplayName,
 			Department: req.Department, Title: req.Title, Phone: req.Phone,
+			Email: req.Email, Gender: req.Gender, Remark: req.Remark,
 		}
 		var present map[string]json.RawMessage
 		if len(raw) > 0 {
@@ -196,6 +263,75 @@ func RegisterPlatformOrgMemberRoutes(r *gin.RouterGroup, svc *Service, aud *audi
 			}
 		}
 		if err := svc.tenants.UpdateMember(c.Request.Context(), pool, t, cmd); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if req.Status != nil {
+			if err := svc.tenants.SetMemberStatus(c.Request.Context(), pool, t, mid, *req.Status); err != nil {
+				apiresp.Fail(c, err)
+				return
+			}
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/orgs/:tid/members/:mid/disable", write(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		mid, err := kernel.ParseID(c.Param("mid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "成员 ID 无效", err))
+			return
+		}
+		if err := svc.tenants.SetMemberStatus(c.Request.Context(), pool, t, mid, "disabled"); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/orgs/:tid/members/:mid/enable", write(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		mid, err := kernel.ParseID(c.Param("mid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "成员 ID 无效", err))
+			return
+		}
+		if err := svc.tenants.SetMemberStatus(c.Request.Context(), pool, t, mid, "active"); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true})
+	})
+
+	r.POST("/platform/orgs/:tid/members/:mid/reset-password", write(), func(c *gin.Context) {
+		t, ok := orgTenantFromParam(c, svc)
+		if !ok {
+			return
+		}
+		mid, err := kernel.ParseID(c.Param("mid"))
+		if err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_id", "成员 ID 无效", err))
+			return
+		}
+		var req struct {
+			NewPassword string `json:"new_password"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.Wrap(errors.KindParam, "iam.invalid_request", "请求格式错误", err))
+			return
+		}
+		row, err := svc.tenants.GetMember(c.Request.Context(), pool, t, mid)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		if err := svc.AdminResetPassword(c.Request.Context(), row.PlatformUserID, req.NewPassword); err != nil {
 			apiresp.Fail(c, err)
 			return
 		}

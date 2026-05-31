@@ -80,6 +80,7 @@ const router = createRouter({
             { path: "posts",         name: "admin.posts",         component: () => import("@/modules/admin/views/PostsView.vue") },
             { path: "settings",      name: "admin.settings",      component: () => import("@/modules/admin/views/SettingsView.vue") },
             { path: "apps",          name: "admin.apps",          component: () => import("@/modules/admin/views/AppsView.vue") },
+            { path: "menus",         name: "admin.menus",         component: () => import("@/modules/admin/views/MenuConfigView.vue") },
             { path: "audit",         name: "admin.audit",         component: () => import("@/modules/admin/views/AuditView.vue") },
             { path: "dict",          name: "admin.dict",          component: () => import("@/modules/admin/views/DictView.vue") },
             { path: "notices",       name: "admin.notices",       component: () => import("@/modules/admin/views/NoticeView.vue") },

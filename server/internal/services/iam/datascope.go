@@ -13,7 +13,7 @@ import (
 //
 //	spec, _ := iam.ResolveDataScope(ctx, memberID, tenantID)
 //	switch spec.Kind {
-//	case iam.DataScopeAll:        // no filter
+//	case iam.DataScopeAll:        // no filter inside the current tenant
 //	case iam.DataScopeSelf:       // WHERE owner_member_id = spec.SelfMemberID
 //	case iam.DataScopeDept,
 //	     iam.DataScopeDeptAndSub, // WHERE dept_id = ANY(spec.DeptIDs)
@@ -33,7 +33,7 @@ type ScopeSpec struct {
 // treated as its own kind and only wins when no broader plain scope is present.
 func scopeRank(kind string) int {
 	switch kind {
-	case DataScopeAll:
+	case DataScopeAll, DataScopeTenant:
 		return 5
 	case DataScopeDeptAndSub:
 		return 4
@@ -89,6 +89,9 @@ func (s *Service) ResolveDataScope(ctx context.Context, memberID, tenantID kerne
 	if bestKind == "" {
 		// No roles at all → least privilege.
 		return ScopeSpec{Kind: DataScopeSelf, SelfMemberID: memberID}, nil
+	}
+	if bestKind == DataScopeTenant {
+		bestKind = DataScopeAll
 	}
 
 	spec := ScopeSpec{Kind: bestKind, SelfMemberID: memberID}

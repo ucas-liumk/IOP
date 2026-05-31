@@ -4,7 +4,6 @@ import type {
   MemberApi, MemberPage, MemberListParams,
   MemberDeptRow, MemberDeptTreeRow, RoleRow, PostRow, MemberRow,
 } from "@/shell/components";
-import { resetPlatformUserPassword } from "@/modules/admin/api/admin";
 
 // Platform-console organization (tenant) department management. These reuse the
 // SAME dept service the tenant console uses; the only difference is the org's
@@ -82,8 +81,10 @@ export async function listOrgMembers(tid: string, p: MemberListParams): Promise<
     page_size: p.pageSize ?? 20,
   };
   if (p.search) query.search = p.search;
+  if (p.status) query.status = p.status;
   if (p.deptId) query.dept_id = p.deptId;
   if (p.subtree) query.subtree = "true";
+  if (p.ids?.length) query.ids = p.ids.join(",");
   const r = await client.get(mbase(tid), { params: query });
   const d = r.data?.data ?? {};
   return {
@@ -96,6 +97,17 @@ export async function listOrgMembers(tid: string, p: MemberListParams): Promise<
 
 export async function setOrgMemberDept(tid: string, memberId: string, deptId: string | null): Promise<void> {
   await client.patch(`${mbase(tid)}/${memberId}`, { dept_id: deptId ?? "" });
+}
+export async function createOrgMember(tid: string, payload: {
+  username: string; display_name: string; phone?: string; email?: string; gender?: string;
+  dept_id: string; title?: string; role_codes?: string[]; post_ids?: string[];
+  status?: string; password?: string; remark?: string;
+}): Promise<MemberRow> {
+  const r = await client.post(mbase(tid), payload);
+  return r.data?.data as MemberRow;
+}
+export async function updateOrgMember(tid: string, memberId: string, patch: Partial<MemberRow> & { dept_id?: string | null }): Promise<void> {
+  await client.patch(`${mbase(tid)}/${memberId}`, patch);
 }
 export async function assignOrgMemberPost(tid: string, memberId: string, postId: string): Promise<void> {
   await client.post(`${mbase(tid)}/${memberId}/posts`, { post_id: postId });
@@ -121,12 +133,21 @@ export async function listOrgPosts(tid: string): Promise<PostRow[]> {
   const r = await client.get(`/platform/orgs/${tid}/posts`);
   return r.data?.data?.posts ?? [];
 }
-export async function downloadOrgMembersCsv(tid: string): Promise<void> {
-  const res = await client.get(`${mbase(tid)}/export`, { responseType: "blob" });
+export async function downloadOrgMembersCsv(tid: string, p: MemberListParams = {} as MemberListParams): Promise<void> {
+  const res = await client.get(`${mbase(tid)}/export`, {
+    responseType: "blob",
+    params: {
+      search: p.search,
+      status: p.status,
+      dept_id: p.deptId ?? undefined,
+      subtree: p.subtree,
+      ids: p.ids?.join(","),
+    },
+  });
   const url = URL.createObjectURL(res.data as Blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "members.csv";
+  a.download = "members.xlsx";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -148,6 +169,8 @@ export function orgMemberApi(tid: string): MemberApi {
     fetchDeptTree: () => getOrgDeptTree(tid) as Promise<MemberDeptTreeRow[]>,
     fetchDeptFlat: () => listOrgDepts(tid) as Promise<MemberDeptRow[]>,
     setDept: (memberId, deptId) => setOrgMemberDept(tid, memberId, deptId),
+    createMember: (payload) => createOrgMember(tid, payload as any),
+    updateMember: (memberId, patch) => updateOrgMember(tid, memberId, patch as any),
     assignPost: (memberId, postId) => assignOrgMemberPost(tid, memberId, postId),
     removePost: (memberId, postId) => removeOrgMemberPost(tid, memberId, postId),
     listRoles: () => listOrgRoles(tid),
@@ -155,7 +178,8 @@ export function orgMemberApi(tid: string): MemberApi {
     grantRole: (m: MemberRow, code) => grantOrgMemberRole(tid, m.member_id, code),
     revokeRole: (m: MemberRow, roleId) => revokeOrgMemberRole(tid, m.member_id, roleId),
     listPosts: () => listOrgPosts(tid),
-    exportCsv: () => downloadOrgMembersCsv(tid),
-    resetPassword: (m: MemberRow, pw) => resetPlatformUserPassword(m.platform_user_id, pw),
+    exportCsv: (p) => downloadOrgMembersCsv(tid, p),
+    setDisabled: async (m: MemberRow, disabled) => { await client.post(`${mbase(tid)}/${m.member_id}/${disabled ? "disable" : "enable"}`); },
+    resetPassword: async (m: MemberRow, pw) => { await client.post(`${mbase(tid)}/${m.member_id}/reset-password`, { new_password: pw }); },
   };
 }
