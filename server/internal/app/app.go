@@ -180,6 +180,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		"tenancy.dept_created", "tenancy.dept_updated", "tenancy.dept_deleted",
 		"tenancy.dept_status_changed", "tenancy.dept_moved", "tenancy.dept_imported",
 		"iam.user_logged_in", "iam.user_logged_out", "iam.login_failed",
+		"iam.role_created", "iam.role_updated", "iam.role_deleted", "iam.role_policy_updated",
 		"okr.plan_created", "okr.plan_item_completed", "okr.plan_closed",
 		"okr.daily_submitted", "okr.weekly_submitted",
 	})
@@ -263,6 +264,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		Modules:     registry,
 		AppStore:    appStore,
 	}
+	if err := a.syncMenuCatalog(ctx); err != nil {
+		logger.Warn("sync menu catalog failed", zap.Error(err))
+	}
 
 	cleanup := func() {
 		_ = auditSvc.Close()
@@ -339,8 +343,8 @@ func (a *App) Engine() *gin.Engine {
 		Clock:     kernel.RealClock{},
 		Authz:     authz,
 		DataScope: dataScope,
-		AppEnabled: func(ctx context.Context, tenantID kernel.ID, code string) (bool, error) {
-			return a.AppStore.IsInstalled(ctx, tenantID, code)
+		AppEnabled: func(ctx context.Context, tenantID, platformUserID kernel.ID, code string) (bool, error) {
+			return a.AppStore.IsEnabledForUser(ctx, tenantID, platformUserID, code)
 		},
 	}
 	a.Modules.MountAll(authT, deps)

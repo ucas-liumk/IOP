@@ -49,16 +49,27 @@ type Manifest struct {
 // the current console; AND (Perm == "" OR the user's role policies permit the
 // split "resource:action"); AND (App == "" OR that app is enabled for the tenant).
 type MenuNode struct {
-	Key     string `json:"key"`     // unique, e.g. "okr.plans"
-	Title   string `json:"title"`   // "我的计划"
-	Icon    string `json:"icon"`    // SVG path data
-	Path    string `json:"path"`    // frontend route, e.g. "/okr/plans" (dir nodes may be empty)
-	Parent  string `json:"parent"`  // parent node Key; "" = top level
-	Type    string `json:"type"`    // "dir" | "menu" | "button"
-	Console string `json:"console"` // "platform" | "tenant" | "both"
-	App     string `json:"app"`     // owning module code (gated by AppEnabled); "" for built-in
-	Perm    string `json:"perm"`    // required permission "resource:action"; "" = login/App only
-	Order   int    `json:"order"`
+	ID            string `json:"id,omitempty"`
+	Key           string `json:"key"`       // unique, e.g. "okr.plans"
+	Title         string `json:"title"`     // "我的计划"
+	Icon          string `json:"icon"`      // SVG path data
+	Path          string `json:"path"`      // frontend route, e.g. "/okr/plans" (dir nodes may be empty)
+	Component     string `json:"component"` // frontend component path; reserved for dynamic-route loaders
+	Parent        string `json:"parent"`    // parent node Key; "" = top level
+	Type          string `json:"type"`      // "dir" | "menu" | "button" | "link" | "iframe" | "micro"
+	Console       string `json:"console"`   // "platform" | "tenant" | "both"
+	App           string `json:"app"`       // owning module code (gated by AppEnabled); "" for built-in
+	Perm          string `json:"perm"`      // required permission "resource:action"; "" = login/App only
+	Order         int    `json:"order"`
+	Visible       bool   `json:"visible"`
+	Cacheable     bool   `json:"cacheable"`
+	Status        string `json:"status"`
+	ExternalURL   string `json:"external_url,omitempty"`
+	IframeURL     string `json:"iframe_url,omitempty"`
+	MicroAppCode  string `json:"micro_app_code,omitempty"`
+	MicroEntry    string `json:"micro_entry,omitempty"`
+	BuiltIn       bool   `json:"built_in"`
+	TenantEnabled *bool  `json:"tenant_enabled,omitempty"`
 }
 
 // Permission is one (resource, action) tuple a module exposes to RBAC.
@@ -89,10 +100,11 @@ type ScopeSpec struct {
 // it to enforce object-level visibility in addition to route-level RBAC.
 type DataScopeFunc func(ctx context.Context, memberID, tenantID kernel.ID) (ScopeSpec, error)
 
-// AppEnabledFunc reports whether a tenant has enabled (installed) the given app
-// code via the AppStore. Used by the Registry to gate module routes so that
-// disabling an app actually blocks its API, not just its UI visibility.
-type AppEnabledFunc func(ctx context.Context, tenantID kernel.ID, code string) (bool, error)
+// AppEnabledFunc reports whether the given app code is usable for the requesting
+// user in a tenant: enabled at the TENANT level (org installed it) OR added by
+// the USER to their own workspace. Used by the Registry to gate module routes so
+// that disabling an app actually blocks its API, not just its UI visibility.
+type AppEnabledFunc func(ctx context.Context, tenantID, platformUserID kernel.ID, code string) (bool, error)
 
 // Deps is what app.Build() injects into each module constructor.
 // Modules NEVER reach for globals — everything they need is here.
