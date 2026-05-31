@@ -179,4 +179,7 @@ function onSizeChange(e: Event) {
 .pager-jump-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .pager-jump-input { -moz-appearance: textfield; }
 .pager-jump-go { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .pager-btn { transition: none; }
+}
 </style>

@@ -26,8 +26,17 @@
           <span class="org-count">{{ tenants.length }}</span>
         </div>
 
-        <div v-if="tenants.length === 0 && !loading" class="org-empty">
-          <EmptyState title="尚无组织机构" sub="点击右上「+ 新建组织」开通" icon="◫" />
+        <!-- Loading skeleton -->
+        <div v-if="loading && tenants.length === 0" class="org-skeleton" role="status" aria-label="加载中">
+          <SkeletonLoader :lines="6" :height="40" :last-short="false" />
+        </div>
+
+        <div v-else-if="tenants.length === 0" class="org-empty">
+          <EmptyState title="尚无组织机构" sub="开通第一个组织开始" icon="◫">
+            <template #actions>
+              <button class="btn btn-primary btn-sm" v-perm="'org:write'" @click="openCreate">+ 新建组织</button>
+            </template>
+          </EmptyState>
         </div>
 
         <ul v-else class="org-list">
@@ -49,8 +58,12 @@
               </div>
             </div>
             <div class="row-actions" @click.stop>
-              <button v-if="t.status === 'active'" v-perm="'org:write'" class="btn btn-ghost btn-sm danger" @click="suspend(t)">停用</button>
-              <button v-else-if="t.status === 'suspended'" v-perm="'org:write'" class="btn btn-ghost btn-sm" @click="resume(t)">恢复</button>
+              <button v-if="t.status === 'active'" v-perm="'org:write'" class="btn btn-ghost btn-sm danger" :disabled="rowBusy.has(t.id)" @click="suspend(t)">
+                <span v-if="rowBusy.has(t.id)" class="btn-spinner" aria-hidden="true" />停用
+              </button>
+              <button v-else-if="t.status === 'suspended'" v-perm="'org:write'" class="btn btn-ghost btn-sm" :disabled="rowBusy.has(t.id)" @click="resume(t)">
+                <span v-if="rowBusy.has(t.id)" class="btn-spinner" aria-hidden="true" />恢复
+              </button>
               <span v-else class="muted">—</span>
             </div>
           </li>
@@ -99,11 +112,11 @@
                  placeholder="3-32 位小写字母/数字/-/_，以字母开头" />
           <span class="field-hint">用于 schema 名 (tenant_xxx) 和接口标识，创建后不可修改</span>
         </label>
-        <div v-if="actionError" class="form-error">{{ actionError }}</div>
+        <div v-if="actionError" class="form-error" role="alert">{{ actionError }}</div>
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="closeCreate">取消</button>
           <button class="btn btn-primary" :disabled="busy" @click="confirmCreate">
-            {{ busy ? '创建中…' : '确认创建' }}
+            <span v-if="busy" class="btn-spinner light" aria-hidden="true" />{{ busy ? '创建中…' : '确认创建' }}
           </button>
         </div>
       </div>
@@ -113,7 +126,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { PageHeader, EmptyState, DeptTreeManager, type DeptApi } from "@/shell/components";
+import { PageHeader, EmptyState, SkeletonLoader, DeptTreeManager, type DeptApi } from "@/shell/components";
 import { client } from "@/api/client";
 import {
   listAllTenants, suspendTenant, resumeTenant, type PlatformTenant,
@@ -129,6 +142,13 @@ const tenants = ref<PlatformTenant[]>([]);
 const loading = ref(false);
 const busy = ref(false);
 const actionError = ref("");
+// Per-row in-flight status toggles (suspend / resume) keyed by tenant id.
+const rowBusy = ref<Set<string>>(new Set());
+function setRowBusy(id: string, on: boolean) {
+  const next = new Set(rowBusy.value);
+  if (on) next.add(id); else next.delete(id);
+  rowBusy.value = next;
+}
 
 // Selected org → drives the right-hand dept manager.
 const selectedOrgId = ref<string | null>(null);
@@ -181,20 +201,26 @@ async function confirmCreate() {
 async function suspend(t: PlatformTenant) {
   if (!(await confirm({ title: "确认", message: `确定停用组织 "${t.name}"？该组织成员将无法登录。`, danger: true }))) return;
   actionError.value = "";
+  setRowBusy(t.id, true);
   try {
     await suspendTenant(t.id);
     await reload();
   } catch (e: any) {
     actionError.value = e.response?.data?.error?.message ?? "停用失败";
+  } finally {
+    setRowBusy(t.id, false);
   }
 }
 async function resume(t: PlatformTenant) {
   actionError.value = "";
+  setRowBusy(t.id, true);
   try {
     await resumeTenant(t.id);
     await reload();
   } catch (e: any) {
     actionError.value = e.response?.data?.error?.message ?? "恢复失败";
+  } finally {
+    setRowBusy(t.id, false);
   }
 }
 
@@ -251,15 +277,17 @@ function colorFor(name: string) {
   font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
 }
 .org-empty { padding: 8px 0; }
+.org-skeleton { padding: 8px 6px; }
 .org-list { list-style: none; margin: 0; padding: 0; overflow: auto; }
 .org-row {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 10px; border-radius: 9px; cursor: pointer;
   border: 1px solid transparent;
-  transition: background .12s, border-color .12s;
+  border-left: 3px solid transparent;
+  transition: background .15s ease, border-color .15s ease;
 }
 .org-row:hover { background: var(--surface-2); }
-.org-row.selected { background: var(--primary-soft); border-color: var(--primary); }
+.org-row.selected { background: var(--primary-soft); border-color: var(--primary); border-left-color: var(--primary); }
 .t-logo {
   width: 32px; height: 32px; border-radius: 7px;
   color: white; font-weight: 700;
@@ -329,9 +357,29 @@ code.mono { color: var(--text-2); }
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
-.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background .15s ease, border-color .15s ease, color .15s ease; }
 .btn:hover { background: var(--bg); }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
 .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-ghost { background: var(--surface); }
+
+/* Inline button spinner */
+.btn-spinner {
+  display: inline-block; width: 11px; height: 11px; margin-right: 5px; vertical-align: -1px;
+  border: 2px solid var(--border-strong); border-top-color: var(--primary);
+  border-radius: 50%; animation: ptv-spin .6s linear infinite;
+}
+.btn-spinner.light { border-color: color-mix(in srgb, currentColor 45%, transparent); border-top-color: currentColor; }
+@keyframes ptv-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 900px) {
+  .two-pane { grid-template-columns: 1fr; }
+  .org-pane { max-height: none; }
+  .head-actions { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-row, .btn { transition: none; }
+  .btn-spinner { animation-duration: 1.2s; }
+}
 </style>

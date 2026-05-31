@@ -30,21 +30,30 @@
                     <span class="imp-stat-label">失败</span>
                   </div>
                 </div>
-                <div v-if="result.errors?.length" class="imp-errors">
-                  <table class="imp-err-table">
-                    <thead>
-                      <tr><th>行</th><th>标识</th><th>原因</th></tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(e, i) in result.errors" :key="i">
-                        <td class="imp-err-row">{{ e.row }}</td>
-                        <td class="imp-err-key">{{ e.key || '—' }}</td>
-                        <td class="imp-err-msg">{{ e.message }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                <div v-if="result.errors?.length" class="imp-errors-wrap">
+                  <div class="imp-errors-head">
+                    <span class="imp-errors-title">失败明细 · {{ result.errors.length }} 行</span>
+                    <button class="btn btn-ghost btn-xs" type="button" @click="reset">
+                      修正后重试
+                    </button>
+                  </div>
+                  <div class="imp-errors">
+                    <table class="imp-err-table">
+                      <thead>
+                        <tr><th>行</th><th>标识</th><th>原因</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(e, i) in result.errors" :key="i">
+                          <td class="imp-err-row tabular-nums">{{ e.row }}</td>
+                          <td class="imp-err-key">{{ e.key || '—' }}</td>
+                          <td class="imp-err-msg">{{ e.message }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
                 <p v-else class="imp-all-ok">
+                  <svg class="imp-ok-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
                   {{ resultMode === 'dry-run' ? '预校验通过，未写入数据。' : '全部导入成功。' }}
                 </p>
               </div>
@@ -78,7 +87,14 @@
                   <div v-if="file" class="imp-file-name">{{ file.name }}</div>
                   <div v-else class="imp-drop-text">点击选择或拖拽 Excel / CSV 文件到此处</div>
                 </div>
-                <p v-if="errorMsg" class="imp-error-msg">{{ errorMsg }}</p>
+                <p v-if="errorMsg" class="imp-error-msg" role="alert">{{ errorMsg }}</p>
+                <label class="imp-mode">
+                  <span>已存在记录</span>
+                  <select v-model="mode">
+                    <option value="overwrite">覆盖更新</option>
+                    <option value="skip">跳过</option>
+                  </select>
+                </label>
               </div>
             </div>
 
@@ -94,7 +110,8 @@
                 :disabled="!file || busy"
                 @click="doImport(true)"
               >
-                {{ busy ? "处理中…" : "预校验" }}
+                <span v-if="busyMode === 'dry'" class="btn-spinner" aria-hidden="true" />
+                {{ busyMode === 'dry' ? "校验中…" : "预校验" }}
               </button>
               <button
                 v-if="!result"
@@ -103,7 +120,8 @@
                 :disabled="!file || busy"
                 @click="doImport(false)"
               >
-                {{ busy ? "导入中…" : "导入" }}
+                <span v-if="busyMode === 'import'" class="btn-spinner light" aria-hidden="true" />
+                {{ busyMode === 'import' ? "导入中…" : "导入" }}
               </button>
             </footer>
           </div>
@@ -146,9 +164,12 @@ const picker = ref<HTMLInputElement | null>(null);
 const file = ref<File | null>(null);
 const dragOver = ref(false);
 const busy = ref(false);
+// Which async op is in flight, so each button can show its own spinner.
+const busyMode = ref<"dry" | "import" | null>(null);
 const result = ref<BulkResult | null>(null);
 const resultMode = ref<"import" | "dry-run">("import");
 const errorMsg = ref("");
+const mode = ref<"overwrite" | "skip">("overwrite");
 
 // Reset transient state whenever the dialog (re)opens.
 watch(
@@ -163,7 +184,9 @@ function reset() {
   result.value = null;
   resultMode.value = "import";
   errorMsg.value = "";
+  mode.value = "overwrite";
   busy.value = false;
+  busyMode.value = null;
   dragOver.value = false;
   if (picker.value) picker.value.value = "";
 }
@@ -200,12 +223,14 @@ async function downloadTemplate() {
 async function doImport(dryRun = false) {
   if (!file.value) return;
   busy.value = true;
+  busyMode.value = dryRun ? "dry" : "import";
   errorMsg.value = "";
   try {
     const fd = new FormData();
     fd.append("file", file.value);
     fd.append("dry_run", dryRun ? "true" : "false");
-    const res = await client.post(props.importUrl, fd, { params: { dry_run: dryRun ? "true" : undefined } });
+    fd.append("mode", mode.value);
+    const res = await client.post(props.importUrl, fd, { params: { dry_run: dryRun ? "true" : undefined, mode: mode.value } });
     const data: BulkResult = res.data?.data ?? res.data;
     resultMode.value = dryRun ? "dry-run" : "import";
     result.value = data;
@@ -220,6 +245,7 @@ async function doImport(dryRun = false) {
     notify.error(errorMsg.value);
   } finally {
     busy.value = false;
+    busyMode.value = null;
   }
 }
 
@@ -291,6 +317,8 @@ function triggerBlobDownload(blob: Blob, name: string) {
 .imp-drop-text { font-size: 13px; margin-top: 8px; }
 .imp-file-name { font-size: 13px; font-weight: 600; margin-top: 8px; color: var(--text); }
 .imp-error-msg { color: var(--danger); font-size: 12.5px; margin-top: 10px; }
+.imp-mode { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--text-2); }
+.imp-mode select { border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); padding: 5px 9px; font-size: 12.5px; }
 .imp-foot {
   display: flex;
   justify-content: flex-end;
@@ -315,8 +343,14 @@ function triggerBlobDownload(blob: Blob, name: string) {
 .imp-stat-label { display: block; font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .imp-stat.ok .imp-stat-num { color: var(--success, #16a34a); }
 .imp-stat.bad .imp-stat-num { color: var(--danger); }
-.imp-all-ok { font-size: 13px; color: var(--success, #16a34a); text-align: center; padding: 8px 0; }
+.imp-all-ok { font-size: 13px; color: var(--success, #16a34a); text-align: center; padding: 8px 0; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.imp-ok-icon { flex-shrink: 0; }
+.imp-errors-wrap { display: flex; flex-direction: column; gap: 8px; }
+.imp-errors-head { display: flex; align-items: center; justify-content: space-between; }
+.imp-errors-title { font-size: 12.5px; font-weight: 600; color: var(--danger); }
+.btn-xs { padding: 3px 9px; font-size: 11.5px; }
 .imp-errors { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-md, 10px); }
+.tabular-nums { font-variant-numeric: tabular-nums; }
 .imp-err-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .imp-err-table th {
   text-align: left; font-weight: 600; color: var(--text-3);
@@ -334,4 +368,26 @@ function triggerBlobDownload(blob: Blob, name: string) {
 .imp-fade-enter-from, .imp-fade-leave-to { opacity: 0; }
 .imp-pop-enter-active { transition: transform .26s cubic-bezier(.22, 1, .36, 1), opacity .26s ease; }
 .imp-pop-enter-from { transform: translateY(10px) scale(.96); opacity: 0; }
+
+/* Inline button spinner */
+.btn-spinner {
+  display: inline-block;
+  width: 12px; height: 12px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: imp-spin .6s linear infinite;
+}
+.btn-spinner.light { border-color: color-mix(in srgb, currentColor 45%, transparent); border-top-color: currentColor; }
+@keyframes imp-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .imp-fade-enter-active, .imp-fade-leave-active,
+  .imp-pop-enter-active { transition: none; }
+  .imp-pop-enter-from { transform: none; }
+  .imp-drop { transition: none; }
+  .btn-spinner { animation-duration: 1.2s; }
+}
 </style>

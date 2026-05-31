@@ -41,30 +41,33 @@
           </span>
         </div>
 
-        <TreeView
-          v-if="hasChildren(node) && isOpen(node)"
-          :nodes="childrenOf(node)"
-          :selected-id="selectedId"
-          :checked-ids="checkedIds"
-          :checkbox="checkbox"
-          :cascade="cascade"
-          :filter="filter"
-          :id-key="idKey"
-          :label-key="labelKey"
-          :children-key="childrenKey"
-          :depth="depth + 1"
-          :default-expanded="defaultExpanded"
-          @select="$emit('select', $event)"
-          @check="(id, val) => $emit('check', id, val)"
-          @check-set="(ids) => $emit('check-set', ids)"
-        >
-          <template v-if="$slots.label" #label="childProps">
-            <slot name="label" :node="childProps.node" />
-          </template>
-          <template v-if="$slots.suffix" #suffix="childProps">
-            <slot name="suffix" :node="childProps.node" />
-          </template>
-        </TreeView>
+        <Transition name="tree-expand">
+          <TreeView
+            v-if="hasChildren(node) && isOpen(node)"
+            :nodes="childrenOf(node)"
+            :selected-id="selectedId"
+            :checked-ids="checkedIds"
+            :checkbox="checkbox"
+            :cascade="cascade"
+            :filter="filter"
+            :id-key="idKey"
+            :label-key="labelKey"
+            :children-key="childrenKey"
+            :depth="depth + 1"
+            :default-expanded="defaultExpanded"
+            :expand-signal="expandSignal"
+            @select="$emit('select', $event)"
+            @check="(id, val) => $emit('check', id, val)"
+            @check-set="(ids) => $emit('check-set', ids)"
+          >
+            <template v-if="$slots.label" #label="childProps">
+              <slot name="label" :node="childProps.node" />
+            </template>
+            <template v-if="$slots.suffix" #suffix="childProps">
+              <slot name="suffix" :node="childProps.node" />
+            </template>
+          </TreeView>
+        </Transition>
       </li>
     </template>
     <li v-if="depth === 0 && !nodes.some((n) => visible(n))" class="tree-empty">
@@ -74,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed } from "vue";
+import { reactive, computed, watch } from "vue";
 
 // Generic, recursive tree renderer. Works with any node shape via the *-key
 // props. Supports single-select mode (emit "select") and checkbox mode
@@ -106,6 +109,12 @@ const props = withDefaults(
     depth?: number;
     /** expand every node by default on first render. */
     defaultExpanded?: boolean;
+    /**
+     * Imperative expand/collapse-all signal. Bumping this with a positive id
+     * forces every node open; a negative id forces every node closed. The sign
+     * is what matters (not the magnitude) — the parent flips it on each click.
+     */
+    expandSignal?: number;
   }>(),
   {
     selectedId: null,
@@ -118,6 +127,7 @@ const props = withDefaults(
     childrenKey: "children",
     depth: 0,
     defaultExpanded: true,
+    expandSignal: 0,
   },
 );
 
@@ -160,11 +170,20 @@ function visible(n: any): boolean {
 
 // Per-key open state. Defaults follow `defaultExpanded`.
 const openState = reactive<Record<string, boolean>>({});
+// An expand/collapse-all override: while set, every node ignores its per-key
+// state and follows this flag. Cleared the moment the user toggles a single node.
+const forceOpen = computed(() => (props.expandSignal > 0 ? true : props.expandSignal < 0 ? false : null));
+const overrideAll = reactive<{ value: boolean | null }>({ value: null });
+watch(
+  () => props.expandSignal,
+  () => { overrideAll.value = forceOpen.value; },
+);
 function isOpen(n: any): boolean {
   // With an active filter, auto-expand branches that contain matches so the
   // matching descendants are revealed regardless of manual collapse state.
   if (filterLc.value && childrenOf(n).some(subtreeMatches)) return true;
   const k = keyOf(n);
+  if (openState[k] === undefined && overrideAll.value !== null) return overrideAll.value;
   return openState[k] ?? props.defaultExpanded;
 }
 function toggle(n: any) {
@@ -268,4 +287,24 @@ export default { name: "TreeView" };
 .tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-suffix { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .tree-empty { color: var(--text-4); font-size: 12.5px; padding: 16px 8px; text-align: center; }
+
+/* Animated expand/collapse for child sub-trees. */
+.tree-expand-enter-active,
+.tree-expand-leave-active {
+  transition: opacity .18s ease, transform .18s ease;
+  transform-origin: top;
+  overflow: hidden;
+}
+.tree-expand-enter-from,
+.tree-expand-leave-to {
+  opacity: 0;
+  transform: scaleY(.96) translateY(-2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .twisty { transition: none; }
+  .tree-expand-enter-active,
+  .tree-expand-leave-active { transition: none; }
+  .tree-expand-enter-from,
+  .tree-expand-leave-to { opacity: 1; transform: none; }
+}
 </style>

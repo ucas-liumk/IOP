@@ -28,11 +28,25 @@
           <span class="org-count">{{ tenants.length }}</span>
         </div>
         <div class="org-search">
-          <input class="input search-sm" v-model="orgFilter" placeholder="搜索组织" />
+          <div class="search-wrap">
+            <input class="input search-sm" v-model="orgFilter" placeholder="搜索组织" />
+            <button v-if="orgFilter" class="search-clear" type="button" aria-label="清除搜索" @click="clearOrgFilter">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
         </div>
 
-        <div v-if="filteredTenants.length === 0 && !loading" class="org-empty">
-          <EmptyState title="无匹配组织" sub="调整搜索或新建组织" icon="◫" />
+        <!-- Loading skeleton -->
+        <div v-if="loading && tenants.length === 0" class="org-skeleton" role="status" aria-label="加载中">
+          <SkeletonLoader :lines="6" :height="40" :last-short="false" />
+        </div>
+
+        <!-- Search returned nothing (distinct from no-data) -->
+        <div v-else-if="filteredTenants.length === 0 && hasOrgFilter" class="org-empty">
+          <EmptyState title="没有匹配结果" sub="试试调整搜索条件" icon="◌" />
+        </div>
+        <div v-else-if="tenants.length === 0" class="org-empty">
+          <EmptyState title="尚无组织机构" sub="点击右上「+ 新建用户」前先开通组织" icon="◫" />
         </div>
 
         <ul v-else class="org-list">
@@ -86,65 +100,77 @@
     <!-- ===== TAB: 全部平台账号 ===== -->
     <div v-else class="all-users-pane card">
       <div class="all-users-toolbar">
-        <input
-          class="input search-md"
-          v-model="allSearch"
-          placeholder="搜索账户名 / 手机号…"
-          @input="onAllSearchInput"
-        />
+        <div class="search-wrap">
+          <input
+            class="input search-md"
+            v-model="allSearch"
+            placeholder="搜索账户名 / 手机号…"
+            @input="onAllSearchInput"
+          />
+          <button v-if="allSearch" class="search-clear" type="button" aria-label="清除搜索" @click="clearAllSearch">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        </div>
         <span class="spacer" />
         <span class="user-count-hint">共 {{ allUsersTotal }} 个账号</span>
       </div>
 
-      <div v-if="allLoading" class="all-loading">
-        <LoadingSpinner />
-        <span>加载中…</span>
+      <!-- Loading skeleton -->
+      <div v-if="allLoading && allUsers.length === 0" class="all-skeleton" role="status" aria-label="加载中">
+        <SkeletonLoader :lines="8" :height="36" :last-short="false" />
       </div>
 
       <template v-else>
-        <div v-if="allUsers.length === 0" class="all-empty">
+        <!-- Search returned nothing vs truly empty -->
+        <div v-if="allUsers.length === 0 && allSearch.trim()" class="all-empty">
+          <EmptyState title="没有匹配结果" sub="试试调整搜索条件" icon="◌" />
+        </div>
+        <div v-else-if="allUsers.length === 0" class="all-empty">
           <EmptyState title="暂无平台账号" sub="可通过「新建用户」按钮创建" icon="◫" />
         </div>
 
-        <table v-else class="all-table">
-          <thead>
-            <tr>
-              <th>账户名</th>
-              <th>手机</th>
-              <th>状态</th>
-              <th>创建时间</th>
-              <th>最近登录</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="u in allUsers" :key="u.id">
-              <td class="col-username">
-                <span class="username-primary">{{ u.username || '—' }}</span>
-                <span v-if="u.email" class="username-email">{{ u.email }}</span>
-              </td>
-              <td>{{ u.phone || '—' }}</td>
-              <td>
-                <span class="status-tag" :class="u.status === 'active' ? 'status-active' : 'status-suspended'">
-                  <span class="dot"></span>{{ u.status === 'active' ? '启用' : '停用' }}
-                </span>
-              </td>
-              <td class="col-time">{{ formatTime(u.created_at) }}</td>
-              <td class="col-time">{{ u.last_login_at ? formatTime(u.last_login_at) : '—' }}</td>
-              <td>
-                <div class="row-actions">
-                  <button class="btn btn-ghost btn-sm" v-perm="'user:write'" @click="openResetPwd(u)">重置密码</button>
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    :class="u.status === 'active' ? 'btn-danger-ghost' : ''"
-                    v-perm="'user:write'"
-                    @click="toggleUserStatus(u)"
-                  >{{ u.status === 'active' ? '停用' : '启用' }}</button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else class="all-table-scroll" :class="{ refreshing: allLoading }">
+          <table class="all-table">
+            <thead>
+              <tr>
+                <th>账户名</th>
+                <th>手机</th>
+                <th>状态</th>
+                <th class="ta-right">创建时间</th>
+                <th class="ta-right">最近登录</th>
+                <th class="ta-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in allUsers" :key="u.id">
+                <td class="col-username">
+                  <span class="username-primary">{{ u.username || '—' }}</span>
+                  <span v-if="u.email" class="username-email">{{ u.email }}</span>
+                </td>
+                <td class="tabular-nums">{{ u.phone || '—' }}</td>
+                <td>
+                  <span class="status-tag" :class="u.status === 'active' ? 'status-active' : 'status-suspended'">
+                    <span class="dot"></span>{{ u.status === 'active' ? '启用' : '停用' }}
+                  </span>
+                </td>
+                <td class="col-time ta-right tabular-nums">{{ formatTime(u.created_at) }}</td>
+                <td class="col-time ta-right tabular-nums">{{ u.last_login_at ? formatTime(u.last_login_at) : '—' }}</td>
+                <td>
+                  <div class="row-actions">
+                    <button class="btn btn-ghost btn-sm" v-perm="'user:write'" :disabled="userRowBusy.has(u.id)" @click="openResetPwd(u)">重置密码</button>
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      :class="u.status === 'active' ? 'btn-danger-ghost' : ''"
+                      v-perm="'user:write'"
+                      :disabled="userRowBusy.has(u.id)"
+                      @click="toggleUserStatus(u)"
+                    ><span v-if="userRowBusy.has(u.id)" class="btn-spinner" aria-hidden="true" />{{ u.status === 'active' ? '停用' : '启用' }}</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
         <Pagination
           v-if="allUsersTotal > 0"
@@ -178,6 +204,10 @@
                  inputmode="numeric" placeholder="11 位手机号" />
         </label>
         <label class="field">
+          <span class="label">邮箱 <span class="optional">（可选）</span></span>
+          <input class="input" v-model="form.email" type="email" placeholder="name@example.com" />
+        </label>
+        <label class="field">
           <span class="label">所属单位</span>
           <select class="input" v-model="form.organization_id" required>
             <option value="" disabled>请选择</option>
@@ -197,11 +227,11 @@
                  placeholder="至少 10 位，含字母与数字" />
           <button type="button" class="btn-link" @click="form.password = randomPassword()">生成强密码</button>
         </label>
-        <div v-if="actionError" class="form-error">{{ actionError }}</div>
+        <div v-if="actionError" class="form-error" role="alert">{{ actionError }}</div>
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="closeCreate">取消</button>
           <button class="btn btn-primary" :disabled="busy" @click="confirmCreate">
-            {{ busy ? '创建中…' : '确认创建' }}
+            <span v-if="busy" class="btn-spinner light" aria-hidden="true" />{{ busy ? '创建中…' : '确认创建' }}
           </button>
         </div>
       </div>
@@ -218,11 +248,11 @@
                  placeholder="至少 10 位，含字母与数字" />
           <button type="button" class="btn-link" @click="resetPwdValue = randomPassword()">生成强密码</button>
         </label>
-        <div v-if="actionError" class="form-error">{{ actionError }}</div>
+        <div v-if="actionError" class="form-error" role="alert">{{ actionError }}</div>
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="closeResetPwd">取消</button>
           <button class="btn btn-primary" :disabled="busy" @click="confirmResetPwd">
-            {{ busy ? '重置中…' : '确认重置' }}
+            <span v-if="busy" class="btn-spinner light" aria-hidden="true" />{{ busy ? '重置中…' : '确认重置' }}
           </button>
         </div>
       </div>
@@ -232,7 +262,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { PageHeader, EmptyState, MemberManager, Pagination, LoadingSpinner, type MemberApi } from "@/shell/components";
+import { PageHeader, EmptyState, MemberManager, Pagination, SkeletonLoader, type MemberApi } from "@/shell/components";
 import {
   listAllTenants, createPlatformUser,
   listPlatformUsersPaged, disablePlatformUser, enablePlatformUser, resetPlatformUserPassword,
@@ -267,9 +297,24 @@ const filteredTenants = computed(() => {
   if (!q) return tenants.value;
   return tenants.value.filter((t) => t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q));
 });
+const hasOrgFilter = computed(() => !!orgFilter.value.trim());
 
 function selectOrg(t: PlatformTenant) {
   selectedOrgId.value = t.id;
+}
+function clearOrgFilter() { orgFilter.value = ""; }
+function clearAllSearch() {
+  allSearch.value = "";
+  allPage.value = 1;
+  loadAllUsers();
+}
+
+// Per-row in-flight toggle (disable/enable) for the all-users table.
+const userRowBusy = ref<Set<string>>(new Set());
+function setUserRowBusy(id: string, on: boolean) {
+  const next = new Set(userRowBusy.value);
+  if (on) next.add(id); else next.delete(id);
+  userRowBusy.value = next;
 }
 
 // ==================== 全部平台账号 tab ====================
@@ -369,7 +414,7 @@ async function toggleUserStatus(u: PlatformUser) {
     danger: isActive,
   });
   if (!ok) return;
-  busy.value = true;
+  setUserRowBusy(u.id, true);
   try {
     if (isActive) {
       await disablePlatformUser(u.id);
@@ -382,7 +427,7 @@ async function toggleUserStatus(u: PlatformUser) {
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "操作失败");
   } finally {
-    busy.value = false;
+    setUserRowBusy(u.id, false);
   }
 }
 
@@ -404,7 +449,7 @@ async function reload() {
 // ==================== Create platform user modal ====================
 const creating = ref(false);
 const form = reactive({
-  username: "", real_name: "", phone: "",
+  username: "", real_name: "", phone: "", email: "",
   organization_id: "", role: "tenant_member" as "tenant_member" | "tenant_admin",
   password: "",
 });
@@ -414,6 +459,7 @@ function openCreate() {
   form.username = "";
   form.real_name = "";
   form.phone = "";
+  form.email = "";
   form.organization_id = selectedOrg.value?.id ?? tenants.value[0]?.id ?? "";
   form.role = "tenant_member";
   form.password = randomPassword();
@@ -541,18 +587,29 @@ function cryptoIndex(n: number): number {
 }
 .org-count { margin-left: auto; background: var(--surface-2); color: var(--text-2); font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
 .org-search { padding: 0 6px 8px; }
-.org-search .search-sm { width: 100%; font-size: 13px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
+.org-search .search-wrap { position: relative; }
+.org-search .search-sm { width: 100%; font-size: 13px; padding: 6px 28px 6px 10px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
 .org-search .search-sm:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.search-wrap { position: relative; }
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; color: var(--text-4); cursor: pointer;
+  width: 18px; height: 18px; display: grid; place-items: center; border-radius: var(--r-sm);
+  transition: color .15s ease, background .15s ease;
+}
+.search-clear:hover { color: var(--text-2); background: var(--surface-2); }
 .org-empty { padding: 8px 0; }
+.org-skeleton { padding: 8px 6px; }
 .org-list { list-style: none; margin: 0; padding: 0; overflow: auto; }
 .org-row {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 10px; border-radius: 9px; cursor: pointer;
   border: 1px solid transparent;
-  transition: background .12s, border-color .12s;
+  border-left: 3px solid transparent;
+  transition: background .15s ease, border-color .15s ease;
 }
 .org-row:hover { background: var(--surface-2); }
-.org-row.selected { background: var(--primary-soft); border-color: var(--primary); }
+.org-row.selected { background: var(--primary-soft); border-color: var(--primary); border-left-color: var(--primary); }
 .t-logo { width: 32px; height: 32px; border-radius: 7px; color: white; font-weight: 700; display: grid; place-items: center; font-size: 14px; flex-shrink: 0; }
 .t-main { flex: 1; min-width: 0; }
 .t-name { font-size: 13.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -586,9 +643,11 @@ code.mono { color: var(--text-2); }
 .search-md:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
 .spacer { flex: 1; }
 .user-count-hint { font-size: 12px; color: var(--text-3); white-space: nowrap; }
-.all-loading { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 13px; padding: 20px 0; }
+.all-skeleton { padding: 8px 0; }
 .all-empty { padding: 8px 0; }
 
+.all-table-scroll { width: 100%; overflow-x: auto; max-height: calc(100vh - 320px); overflow-y: auto; transition: opacity .15s ease; }
+.all-table-scroll.refreshing { opacity: .6; pointer-events: none; }
 .all-table {
   width: 100%; border-collapse: collapse; font-size: 13px;
 }
@@ -596,12 +655,17 @@ code.mono { color: var(--text-2); }
   text-align: left; padding: 8px 10px;
   font-size: 11.5px; font-weight: 600; color: var(--text-3);
   border-bottom: 1px solid var(--border); white-space: nowrap;
+  position: sticky; top: 0; z-index: 2; background: var(--surface-2);
 }
+.all-table th.ta-right { text-align: right; }
 .all-table td {
   padding: 10px 10px; border-bottom: 1px solid var(--border);
   color: var(--text); vertical-align: middle;
 }
+.all-table td.ta-right { text-align: right; }
+.all-table .tabular-nums { font-variant-numeric: tabular-nums; }
 .all-table tr:last-child td { border-bottom: 0; }
+.all-table tbody tr { transition: background .15s ease; }
 .all-table tr:hover td { background: var(--surface-2); }
 
 .col-username { min-width: 120px; }
@@ -609,7 +673,7 @@ code.mono { color: var(--text-2); }
 .username-email { font-size: 11.5px; color: var(--text-3); display: block; margin-top: 1px; }
 .col-time { font-size: 12px; color: var(--text-3); white-space: nowrap; }
 
-.row-actions { display: flex; gap: 6px; }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-danger-ghost { color: var(--danger); border-color: var(--danger-soft); }
 .btn-danger-ghost:hover { background: var(--danger-soft); }
@@ -628,9 +692,30 @@ code.mono { color: var(--text-2); }
 .btn-link { border: 0; background: none; color: var(--primary); font-size: 11.5px; cursor: pointer; text-align: left; padding: 4px 0 0; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
-.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background .15s ease, border-color .15s ease, color .15s ease; }
 .btn:hover { background: var(--bg); }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
 .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-ghost { background: var(--surface); }
+
+/* Inline button spinner */
+.btn-spinner {
+  display: inline-block; width: 11px; height: 11px; margin-right: 5px; vertical-align: -1px;
+  border: 2px solid var(--border-strong); border-top-color: var(--primary);
+  border-radius: 50%; animation: uv-spin .6s linear infinite;
+}
+.btn-spinner.light { border-color: color-mix(in srgb, currentColor 45%, transparent); border-top-color: currentColor; }
+@keyframes uv-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 900px) {
+  .two-pane { grid-template-columns: 1fr; }
+  .org-pane { max-height: none; }
+  .head-actions { flex-wrap: wrap; }
+  .all-table-scroll { max-height: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-row, .btn, .seg-btn, .search-clear, .all-table tbody tr, .all-table-scroll { transition: none; }
+  .btn-spinner { animation-duration: 1.2s; }
+}
 </style>

@@ -3,8 +3,12 @@
     <div class="dtm-head">
       <slot name="head-left" />
       <div class="dtm-actions">
-        <button class="btn btn-ghost btn-sm" @click="reload">刷新</button>
-        <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="exportCsv">导出</button>
+        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="reload">
+          <span v-if="loading" class="btn-spinner" aria-hidden="true" />刷新
+        </button>
+        <button class="btn btn-ghost btn-sm" v-perm="writePerm" :disabled="exporting" @click="exportCsv">
+          <span v-if="exporting" class="btn-spinner" aria-hidden="true" />{{ exporting ? '导出中…' : '导出' }}
+        </button>
         <button class="btn btn-ghost btn-sm" v-perm="writePerm" @click="importOpen = true">导入</button>
         <button class="btn btn-primary btn-sm" v-perm="writePerm" @click="openCreate(null)">+ 新建组织</button>
       </div>
@@ -13,38 +17,73 @@
     <div class="split">
       <!-- Left: department tree -->
       <article class="card tree-pane">
-        <div class="pane-head">组织架构 · {{ flatCount }} 个节点</div>
+        <div class="pane-head-row">
+          <div class="pane-head">组织架构 · {{ flatCount }} 个节点</div>
+          <div class="tree-tools">
+            <button class="tree-tool-btn" type="button" title="展开全部" @click="expandAll">展开全部</button>
+            <button class="tree-tool-btn" type="button" title="收起全部" @click="collapseAll">收起全部</button>
+          </div>
+        </div>
         <div class="tree-search">
-          <input class="input search" v-model="treeFilter" placeholder="搜索组织名称 / 编码" />
+          <div class="search-wrap">
+            <input class="input search" v-model="treeFilter" placeholder="搜索组织名称 / 编码" />
+            <button v-if="treeFilter" class="search-clear" type="button" aria-label="清除搜索" @click="clearTreeFilter">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
           <select class="input status-filter" v-model="statusFilter">
             <option value="">全部状态</option>
             <option value="active">正常</option>
             <option value="disabled">停用</option>
           </select>
         </div>
-        <TreeView
-          :nodes="tree"
-          :selected-id="selectedId"
-          :filter="''"
-          id-key="id"
-          label-key="name"
-          @select="select"
-        >
-          <template #label="{ node }">
-            <span class="dept-node">
-              {{ node.name }}
-              <code v-if="node.org_code" class="node-code">{{ node.org_code }}</code>
-              <span v-if="node.is_root" class="tag-root">根组织</span>
-              <span v-if="node.status !== 'active'" class="tag-off">停用</span>
-            </span>
-          </template>
-        </TreeView>
-        <div v-if="tree.length === 0" class="tree-empty-hint">尚无组织节点。</div>
+
+        <!-- Loading: shimmer rows -->
+        <div v-if="loading && tree.length === 0" class="tree-skeleton" role="status" aria-label="加载中">
+          <SkeletonLoader :lines="7" :height="20" :last-short="false" />
+        </div>
+
+        <template v-else>
+          <TreeView
+            :nodes="tree"
+            :selected-id="selectedId"
+            :filter="''"
+            :expand-signal="expandSignal"
+            id-key="id"
+            label-key="name"
+            @select="select"
+          >
+            <template #label="{ node }">
+              <span class="dept-node">
+                {{ node.name }}
+                <code v-if="node.org_code" class="node-code">{{ node.org_code }}</code>
+                <span v-if="node.is_root" class="tag-root">根组织</span>
+                <span v-if="node.status !== 'active'" class="tag-off">停用</span>
+              </span>
+            </template>
+            <template #empty>
+              <span v-if="hasTreeFilter">没有匹配结果 · 试试调整搜索或筛选</span>
+              <span v-else>暂无部门</span>
+            </template>
+          </TreeView>
+
+          <!-- No data at all (no filter active) → offer to create. -->
+          <EmptyState
+            v-if="tree.length === 0 && !hasTreeFilter"
+            title="暂无部门"
+            sub="新建第一个组织节点开始搭建层级"
+            icon="◫"
+          >
+            <template #actions>
+              <button class="btn btn-primary btn-sm" v-perm="writePerm" @click="openCreate(null)">+ 新建一个</button>
+            </template>
+          </EmptyState>
+        </template>
       </article>
 
       <!-- Right: detail / form -->
       <article class="card detail-pane">
-        <EmptyState v-if="!selected && mode === 'view'" title="选择一个组织" sub="从左侧选择组织查看或编辑，或新建下级组织。" icon="◫" />
+        <EmptyState v-if="!selected && mode === 'view'" title="从左侧选择组织 / 部门" sub="选择左侧任一节点查看或编辑，或新建下级组织。" icon="◫" />
 
         <template v-else>
           <div class="detail-head">
@@ -92,30 +131,52 @@
               <span class="muted">{{ selectedChildren.length }} 个</span>
             </div>
             <div v-if="selectedChildren.length === 0" class="children-empty">暂无下级组织。</div>
-            <table v-else class="children-table">
-              <thead><tr><th>名称</th><th>编码</th><th>类型</th><th>状态</th><th>排序</th></tr></thead>
-              <tbody>
-                <tr v-for="child in selectedChildren" :key="child.id" @click="select(child.id)">
-                  <td>{{ child.name }}</td>
-                  <td><code>{{ child.org_code }}</code></td>
-                  <td>{{ orgTypeLabel(child.org_type) }}</td>
-                  <td>{{ child.status === 'active' ? '正常' : '停用' }}</td>
-                  <td>{{ child.order_num }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div v-else class="children-scroll">
+              <table class="children-table">
+                <thead><tr><th>名称</th><th>编码</th><th>类型</th><th>状态</th><th class="ta-right">排序</th></tr></thead>
+                <tbody>
+                  <tr v-for="child in selectedChildren" :key="child.id" @click="select(child.id)">
+                    <td>{{ child.name }}</td>
+                    <td><code>{{ child.org_code }}</code></td>
+                    <td>{{ orgTypeLabel(child.org_type) }}</td>
+                    <td>{{ child.status === 'active' ? '正常' : '停用' }}</td>
+                    <td class="ta-right tabular-nums">{{ child.order_num }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </section>
 
           <!-- Create / edit form -->
           <form v-else class="form" @submit.prevent="save">
             <label class="field">
               <span class="label">组织名称 *</span>
-              <input class="input" v-model="form.name" required placeholder="例如：研发部" />
+              <input
+                class="input"
+                :class="{ invalid: fieldErr.name }"
+                v-model="form.name"
+                required
+                placeholder="例如：研发部"
+                :aria-invalid="!!fieldErr.name"
+                @blur="validateField('name')"
+                @input="fieldErr.name && validateField('name')"
+              />
+              <span v-if="fieldErr.name" class="field-error" role="alert">{{ fieldErr.name }}</span>
             </label>
             <div class="form-row-2">
               <label class="field">
                 <span class="label">组织编码 *</span>
-                <input class="input" v-model="form.org_code" required placeholder="例如：RD" />
+                <input
+                  class="input"
+                  :class="{ invalid: fieldErr.org_code }"
+                  v-model="form.org_code"
+                  required
+                  placeholder="例如：RD"
+                  :aria-invalid="!!fieldErr.org_code"
+                  @blur="validateField('org_code')"
+                  @input="fieldErr.org_code && validateField('org_code')"
+                />
+                <span v-if="fieldErr.org_code" class="field-error" role="alert">{{ fieldErr.org_code }}</span>
               </label>
               <label class="field">
                 <span class="label">组织类型</span>
@@ -171,10 +232,12 @@
                 <input class="input" v-model="form.remark" placeholder="可选" />
               </label>
             </div>
-            <div v-if="formError" class="form-error">{{ formError }}</div>
+            <div v-if="formError" class="form-error" role="alert">{{ formError }}</div>
             <div class="form-actions">
               <button class="btn btn-ghost" type="button" @click="cancelForm">取消</button>
-              <button class="btn btn-primary" type="submit" :disabled="busy">{{ busy ? '保存中…' : '保存' }}</button>
+              <button class="btn btn-primary" type="submit" :disabled="busy">
+                <span v-if="busy" class="btn-spinner light" aria-hidden="true" />{{ busy ? '保存中…' : '保存' }}
+              </button>
             </div>
           </form>
         </template>
@@ -199,6 +262,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 // dependency at build time.
 import EmptyState from "./EmptyState.vue";
 import TreeView from "./TreeView.vue";
+import SkeletonLoader from "./SkeletonLoader.vue";
 import ImportDialog, { type BulkResult } from "./ImportDialog.vue";
 import { useNotification } from "@/shell/notify";
 import { useConfirm } from "@/shell/confirm";
@@ -274,11 +338,20 @@ const flat = ref<DeptRow[]>([]);
 const selectedId = ref<string | null>(null);
 const mode = ref<"view" | "create" | "edit">("view");
 const busy = ref(false);
+const loading = ref(false);
+const exporting = ref(false);
 const formError = ref("");
+// Per-field validation messages, shown below the field on blur / submit.
+const fieldErr = reactive<{ name: string; org_code: string }>({ name: "", org_code: "" });
 const treeFilter = ref("");
 const statusFilter = ref("");
 const importOpen = ref(false);
+// Expand/collapse-all signal handed to TreeView (sign flips each click).
+const expandSignal = ref(0);
 let reloadTimer: number | undefined;
+
+// True when a tree search / status filter is active (drives the "no match" copy).
+const hasTreeFilter = computed(() => !!treeFilter.value.trim() || !!statusFilter.value);
 
 const flatCount = computed(() => flat.value.length);
 const selected = computed(() => flat.value.find((d) => d.id === selectedId.value) ?? null);
@@ -333,11 +406,20 @@ watch([treeFilter, statusFilter], () => {
 
 async function reload() {
   const query = currentQuery();
-  [tree.value, flat.value] = await Promise.all([props.api.fetchTree(query), props.api.fetchFlat()]);
-  if (selectedId.value && !flat.value.some((d) => d.id === selectedId.value)) {
-    selectedId.value = null;
+  loading.value = true;
+  try {
+    [tree.value, flat.value] = await Promise.all([props.api.fetchTree(query), props.api.fetchFlat()]);
+    if (selectedId.value && !flat.value.some((d) => d.id === selectedId.value)) {
+      selectedId.value = null;
+    }
+  } finally {
+    loading.value = false;
   }
 }
+
+function expandAll() { expandSignal.value = Math.abs(expandSignal.value) + 1; }
+function collapseAll() { expandSignal.value = -(Math.abs(expandSignal.value) + 1); }
+function clearTreeFilter() { treeFilter.value = ""; }
 
 function currentQuery(): DeptQuery {
   return {
@@ -395,6 +477,7 @@ function indentName(d: DeptRow): string {
 function openCreate(parentId: string | null) {
   mode.value = "create";
   formError.value = "";
+  fieldErr.name = ""; fieldErr.org_code = "";
   Object.assign(form, {
     name: "", org_code: "", parent_id: parentId, org_type: "department", order_num: 0,
     leader: "", leader_account: "", phone: "", email: "", status: "active", remark: "",
@@ -405,6 +488,7 @@ function startEdit() {
   if (!selected.value) return;
   mode.value = "edit";
   formError.value = "";
+  fieldErr.name = ""; fieldErr.org_code = "";
   Object.assign(form, {
     name: selected.value.name,
     org_code: selected.value.org_code,
@@ -423,11 +507,18 @@ function startEdit() {
 function cancelForm() {
   mode.value = "view";
   formError.value = "";
+  fieldErr.name = ""; fieldErr.org_code = "";
+}
+
+function validateField(name: "name" | "org_code") {
+  if (name === "name") fieldErr.name = form.name.trim() ? "" : "组织名称不能为空";
+  if (name === "org_code") fieldErr.org_code = form.org_code.trim() ? "" : "组织编码不能为空";
 }
 
 async function save() {
-  if (!form.name.trim()) { formError.value = "组织名称不能为空"; return; }
-  if (!form.org_code.trim()) { formError.value = "组织编码不能为空"; return; }
+  validateField("name");
+  validateField("org_code");
+  if (fieldErr.name || fieldErr.org_code) { formError.value = ""; return; }
   busy.value = true; formError.value = "";
   try {
     if (mode.value === "create") {
@@ -491,10 +582,14 @@ async function removeDept() {
 }
 
 async function exportCsv() {
+  if (exporting.value) return;
+  exporting.value = true;
   try {
     await props.api.exportCsv(currentQuery());
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "导出失败");
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -526,11 +621,27 @@ defineExpose({ reload });
 .split { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 .tree-pane { padding: 12px; }
+.pane-head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .pane-head { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; padding: 4px 8px 10px; }
+.tree-tools { display: flex; gap: 4px; padding: 0 4px 6px; }
+.tree-tool-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-3);
+  font-size: 11px; padding: 3px 7px; border-radius: var(--r-sm); cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.tree-tool-btn:hover { background: var(--surface-2); color: var(--primary); border-color: var(--primary); }
 .tree-search { padding: 0 4px 8px; display: grid; grid-template-columns: 1fr 104px; gap: 8px; }
-.tree-search .search { width: 100%; font-size: 13px; padding: 6px 10px; box-sizing: border-box; }
+.search-wrap { position: relative; min-width: 0; }
+.tree-search .search { width: 100%; font-size: 13px; padding: 6px 28px 6px 10px; box-sizing: border-box; }
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; color: var(--text-4); cursor: pointer;
+  width: 18px; height: 18px; display: grid; place-items: center; border-radius: var(--r-sm);
+  transition: color .15s ease, background .15s ease;
+}
+.search-clear:hover { color: var(--text-2); background: var(--surface-2); }
 .status-filter { font-size: 12px; padding: 6px 8px; }
-.tree-empty-hint { color: var(--text-4); font-size: 12.5px; padding: 12px 8px; }
+.tree-skeleton { padding: 8px; }
 .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--text-3); margin-bottom: 14px; }
 .crumb { display: inline-flex; align-items: center; }
 .crumb-sep { margin: 0 6px; color: var(--text-4); }
@@ -555,17 +666,23 @@ defineExpose({ reload });
 .muted { color: var(--text-3); font-weight: 500; }
 .children-empty { font-size: 12.5px; color: var(--text-4); padding: 8px 0; }
 .children-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.children-scroll { overflow-x: auto; }
 .children-table th { text-align: left; color: var(--text-3); font-weight: 600; padding: 7px 8px; border-bottom: 1px solid var(--border); }
 .children-table td { padding: 8px; border-bottom: 1px solid var(--border-soft); color: var(--text-2); }
-.children-table tbody tr { cursor: pointer; }
+.children-table .ta-right { text-align: right; }
+.children-table .tabular-nums { font-variant-numeric: tabular-nums; }
+.children-table tbody tr { cursor: pointer; transition: background .15s ease; }
 .children-table tbody tr:hover { background: var(--surface-2); }
 
 .form { display: flex; flex-direction: column; gap: 14px; max-width: 520px; }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .label { font-size: 12px; font-weight: 500; color: var(--text-2); }
-.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); }
+.input { padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); transition: border-color .15s ease, box-shadow .15s ease; }
 .input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.input.invalid { border-color: var(--danger); }
+.input.invalid:focus { outline-color: var(--danger-soft); }
+.field-error { font-size: 11.5px; color: var(--danger); }
 .form-error { font-size: 12.5px; color: var(--danger); background: var(--danger-soft); padding: 8px 10px; border-radius: 6px; }
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
@@ -573,12 +690,31 @@ defineExpose({ reload });
 .badge-success { background: var(--success-soft); color: var(--success); }
 .badge-neutral { background: var(--bg-deep); color: var(--text-3); }
 
-.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background .15s ease, border-color .15s ease, color .15s ease; }
 .btn:hover { background: var(--bg); }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
 .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-ghost { background: var(--surface); }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-sm.danger, .danger { color: var(--danger); }
 .btn-sm.danger:hover { background: var(--danger-soft); }
+
+/* Inline button spinner */
+.btn-spinner {
+  display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px;
+  border: 2px solid var(--border-strong); border-top-color: var(--primary);
+  border-radius: 50%; animation: dtm-spin .6s linear infinite;
+}
+.btn-spinner.light { border-color: color-mix(in srgb, currentColor 45%, transparent); border-top-color: currentColor; }
+@keyframes dtm-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 900px) {
+  .split { grid-template-columns: 1fr; }
+  .dtm-head { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn, .input, .tree-tool-btn, .search-clear, .children-table tbody tr { transition: none; }
+  .btn-spinner { animation-duration: 1.2s; }
+}
 </style>
