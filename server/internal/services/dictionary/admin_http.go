@@ -16,13 +16,15 @@ type AdminConfig struct {
 	TenantDB *tenantdb.TenantDB
 }
 
+type AuthzFunc func(resource, action string) gin.HandlerFunc
+
 // RegisterAdminRoutes adds /admin/dict listing + per-tenant override editing.
-func RegisterAdminRoutes(r *gin.RouterGroup, cfg AdminConfig, allTypes []string) {
-	r.GET("/admin/dict/types", func(c *gin.Context) {
+func RegisterAdminRoutes(r *gin.RouterGroup, cfg AdminConfig, allTypes []string, authz AuthzFunc) {
+	r.GET("/admin/dict/types", authz("dict", "read"), func(c *gin.Context) {
 		apiresp.OK(c, gin.H{"types": allTypes})
 	})
 
-	r.GET("/admin/dict/:typeCode/items", func(c *gin.Context) {
+	r.GET("/admin/dict/:typeCode/items", authz("dict", "read"), func(c *gin.Context) {
 		typeCode := c.Param("typeCode")
 		// Platform default
 		baseItems, err := cfg.Memory.List(c.Request.Context(), typeCode)
@@ -59,7 +61,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, cfg AdminConfig, allTypes []string)
 		})
 	})
 
-	r.PUT("/admin/dict/:typeCode/items/:code/override", func(c *gin.Context) {
+	r.PUT("/admin/dict/:typeCode/items/:code/override", authz("dict", "write"), func(c *gin.Context) {
 		typeCode := c.Param("typeCode")
 		code := c.Param("code")
 		var req struct {
@@ -93,7 +95,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, cfg AdminConfig, allTypes []string)
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.DELETE("/admin/dict/:typeCode/items/:code/override", func(c *gin.Context) {
+	r.DELETE("/admin/dict/:typeCode/items/:code/override", authz("dict", "write"), func(c *gin.Context) {
 		typeCode := c.Param("typeCode")
 		code := c.Param("code")
 		err := cfg.TenantDB.Transaction(c.Request.Context(), func(tx pgx.Tx) error {

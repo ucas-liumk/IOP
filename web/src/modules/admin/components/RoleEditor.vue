@@ -1,0 +1,390 @@
+<template>
+  <div class="role-editor">
+    <div class="editor-head">
+      <div>
+        <h3 class="re-title">
+          {{ role.name }}
+          <code class="re-code">{{ role.code }}</code>
+          <span v-if="role.built_in" class="tag-builtin">🔒 内置</span>
+        </h3>
+        <p class="re-sub">勾选菜单授予对应权限 · 设置数据范围</p>
+      </div>
+      <button class="btn btn-primary btn-sm" :disabled="busy || role.built_in || !dirty" @click="save">
+        {{ busy ? '保存中…' : '保存设置' }}
+      </button>
+    </div>
+
+    <div v-if="role.built_in" class="builtin-note">🔒 内置角色不可修改，权限与数据范围已锁定。</div>
+
+    <section class="meta-grid" :class="{ locked: role.built_in }">
+      <label class="field">
+        <span class="label">角色名称</span>
+        <input class="input" v-model="metaName" :disabled="role.built_in" />
+      </label>
+      <label class="field">
+        <span class="label">角色编码</span>
+        <input class="input mono" v-model="metaCode" :disabled="role.built_in" />
+      </label>
+      <label class="field">
+        <span class="label">状态</span>
+        <select class="input" v-model="metaStatus" :disabled="role.built_in">
+          <option value="active">正常</option>
+          <option value="disabled">停用</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="label">排序</span>
+        <input class="input" type="number" v-model.number="metaOrder" :disabled="role.built_in" />
+      </label>
+      <label class="field field-wide">
+        <span class="label">备注</span>
+        <textarea class="input textarea" v-model="metaRemark" rows="2" :disabled="role.built_in" />
+      </label>
+    </section>
+
+    <div class="editor-body">
+      <!-- Menu permission tree -->
+      <section class="re-section" :class="{ locked: role.built_in }">
+        <div class="re-section-head">
+          <span>菜单权限</span>
+          <div class="tree-tools">
+            <button type="button" class="link-btn" :disabled="role.built_in" @click="checkAll(true)">全选</button>
+            <button type="button" class="link-btn" :disabled="role.built_in" @click="checkAll(false)">取消全选</button>
+            <span class="tool-sep">|</span>
+            <button type="button" class="link-btn" @click="expandAll = true">展开</button>
+            <button type="button" class="link-btn" @click="expandAll = false">收起</button>
+          </div>
+        </div>
+        <div class="menu-tree-box">
+          <TreeView
+            :key="treeKey"
+            :nodes="menus"
+            :checked-ids="checkedKeys"
+            checkbox
+            cascade
+            :default-expanded="expandAll"
+            id-key="key"
+            label-key="title"
+            @check-set="onCheckSet"
+          >
+            <template #label="{ node }">
+              <span class="menu-node" :class="{ dir: node.type === 'dir' }">
+                {{ node.title }}
+                <code v-if="node.perm" class="perm-tag">{{ node.perm }}</code>
+                <span v-else class="dir-tag">目录</span>
+              </span>
+            </template>
+          </TreeView>
+          <div v-if="menus.length === 0" class="empty-hint">无可分配的菜单。</div>
+        </div>
+      </section>
+
+      <!-- Data scope -->
+      <section class="re-section" :class="{ locked: role.built_in }">
+        <div class="re-section-head"><span>数据范围</span></div>
+        <div class="scope-options">
+          <label v-for="opt in scopeOptions" :key="opt.value" class="scope-opt">
+            <input type="radio" :value="opt.value" v-model="dataScope" :disabled="role.built_in" />
+            <span>{{ opt.label }}</span>
+          </label>
+        </div>
+        <div v-if="dataScope === 'custom'" class="custom-depts">
+          <div class="cd-head">选择部门</div>
+          <input class="input dept-search" v-model="deptFilter" placeholder="搜索部门" :disabled="role.built_in" />
+          <div class="dept-tree-box">
+            <TreeView
+              :nodes="deptTree"
+              :checked-ids="customDeptIds"
+              checkbox
+              :filter="deptFilter"
+              id-key="id"
+              label-key="name"
+              @check="onDeptCheck"
+            />
+            <div v-if="depts.length === 0" class="muted">尚无部门。</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import { TreeView } from "@/shell/components";
+import { useNotification } from "@/shell/notify";
+import {
+  batchPolicy, updateRole,
+  type Role, type MenuNode, type Dept, type DataScope, type RoleStatus, type PolicyRule, type PolicyChange,
+} from "../api/admin";
+
+const props = defineProps<{
+  role: Role;
+  menus: MenuNode[];
+  depts: Dept[];
+}>();
+
+const emit = defineEmits<{ (e: "changed"): void }>();
+
+const notify = useNotification();
+const busy = ref(false);
+const expandAll = ref(true);
+const treeKey = ref(0); // bump to force the tree to re-read default-expanded
+const deptFilter = ref("");
+
+const scopeOptions: { value: DataScope; label: string }[] = [
+  { value: "all", label: "全部数据" },
+  { value: "tenant", label: "本租户数据" },
+  { value: "dept", label: "本部门" },
+  { value: "dept_and_sub", label: "本部门及以下" },
+  { value: "self", label: "仅本人" },
+  { value: "custom", label: "自定义部门" },
+];
+
+// --- working (mutable) state, accumulated locally until 保存 ---
+const dataScope = ref<DataScope>(props.role.data_scope ?? "all");
+const customDeptIds = ref<string[]>([...(props.role.dept_ids ?? [])]);
+const metaName = ref(props.role.name);
+const metaCode = ref(props.role.code);
+const metaStatus = ref<RoleStatus>(props.role.status ?? "active");
+const metaOrder = ref(props.role.order_num ?? 0);
+const metaRemark = ref(props.role.remark ?? "");
+// checkedKeys is the live set of checked menu-node keys (cascade-driven).
+const checkedKeys = ref<string[]>([]);
+
+function splitPerm(p: string): [string, string] {
+  const i = p.lastIndexOf(":");
+  if (i < 0) return [p, "*"];
+  return [p.slice(0, i), p.slice(i + 1)];
+}
+
+// Granted perms derived from the role's current policies (server truth). Used
+// only to seed the initial checkbox state. Wildcards count as satisfying.
+function permSatisfied(perm: string, granted: Set<string>): boolean {
+  if (!perm) return false;
+  const [needRes, needAct] = splitPerm(perm);
+  for (const g of granted) {
+    const [gRes, gAct] = splitPerm(g);
+    if ((gRes === "*" || gRes === needRes) && (gAct === "*" || gAct === needAct)) return true;
+  }
+  return false;
+}
+
+// Initial checked keys for the role. A node is "checked" (and so pushed) when it
+// is satisfied: a perm-bearing leaf is satisfied iff its perm is granted; a
+// perm-less leaf is always satisfied; a parent is satisfied iff its own perm (if
+// any) is granted AND every child is satisfied. Pushing satisfied perm-less nodes
+// keeps the cascade TreeView visuals consistent (no stuck-indeterminate parents).
+function computeInitialChecked(): string[] {
+  const granted = new Set<string>();
+  for (const p of (props.role.policies ?? []) as PolicyRule[]) {
+    if (p.effect === "allow") granted.add(`${p.resource}:${p.action}`);
+  }
+  const keys: string[] = [];
+  const visit = (n: MenuNode): boolean => {
+    const children = n.children ?? [];
+    if (!children.length) {
+      const ok = !n.perm || permSatisfied(n.perm, granted);
+      if (ok) keys.push(n.key);
+      return ok;
+    }
+    const childResults = children.map(visit);
+    const ownOk = !n.perm || permSatisfied(n.perm, granted);
+    const checked = ownOk && childResults.every(Boolean);
+    if (checked) keys.push(n.key);
+    return checked;
+  };
+  for (const n of props.menus) visit(n);
+  return keys;
+}
+
+// The snapshot of checked keys at load time — used to diff on save.
+const initialKeys = ref<Set<string>>(new Set());
+
+function reset() {
+  dataScope.value = props.role.data_scope ?? "all";
+  customDeptIds.value = [...(props.role.dept_ids ?? [])];
+  metaName.value = props.role.name;
+  metaCode.value = props.role.code;
+  metaStatus.value = props.role.status ?? "active";
+  metaOrder.value = props.role.order_num ?? 0;
+  metaRemark.value = props.role.remark ?? "";
+  const init = computeInitialChecked();
+  checkedKeys.value = [...init];
+  initialKeys.value = new Set(init);
+}
+reset();
+watch(() => props.role, reset);
+// Re-seed checked keys if the menu list arrives after the role (async load).
+watch(() => props.menus, () => { if (props.menus.length) reset(); });
+// Remount the tree when expand/collapse-all toggles so default-expanded applies.
+watch(expandAll, () => { treeKey.value++; });
+
+// cascade TreeView emits the full resulting checked set.
+function onCheckSet(ids: string[]) {
+  if (props.role.built_in) return;
+  checkedKeys.value = ids;
+}
+
+function onDeptCheck(id: string, value: boolean) {
+  if (props.role.built_in) return;
+  const set = new Set(customDeptIds.value);
+  if (value) set.add(id); else set.delete(id);
+  customDeptIds.value = Array.from(set);
+}
+
+// Build a nested dept tree from the flat dept list (TreeView needs children).
+const deptTree = computed(() => {
+  const byId = new Map<string, Dept & { children: any[] }>();
+  for (const d of props.depts) byId.set(d.id, { ...d, children: [] });
+  const roots: any[] = [];
+  for (const d of props.depts) {
+    const node = byId.get(d.id)!;
+    if (d.parent_id && byId.has(d.parent_id)) byId.get(d.parent_id)!.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+});
+
+// --- select-all / expand-collapse ---
+function allKeys(): string[] {
+  const keys: string[] = [];
+  walk(props.menus, (n) => keys.push(n.key));
+  return keys;
+}
+function checkAll(value: boolean) {
+  if (props.role.built_in) return;
+  checkedKeys.value = value ? allKeys() : [];
+}
+
+// dirty when the checked-key set or the data-scope/dept selection differs.
+const dirty = computed(() => {
+  if (!props.role.built_in) {
+    if (metaName.value !== props.role.name) return true;
+    if (metaCode.value !== props.role.code) return true;
+    if (metaStatus.value !== (props.role.status ?? "active")) return true;
+    if (Number(metaOrder.value ?? 0) !== Number(props.role.order_num ?? 0)) return true;
+    if (metaRemark.value !== (props.role.remark ?? "")) return true;
+  }
+  const cur = new Set(checkedKeys.value);
+  if (cur.size !== initialKeys.value.size) return true;
+  for (const k of cur) if (!initialKeys.value.has(k)) return true;
+  if (dataScope.value !== (props.role.data_scope ?? "all")) return true;
+  const origDepts = new Set(props.role.dept_ids ?? []);
+  const curDepts = new Set(dataScope.value === "custom" ? customDeptIds.value : []);
+  if (curDepts.size !== origDepts.size) return true;
+  for (const d of curDepts) if (!origDepts.has(d)) return true;
+  return false;
+});
+
+// Map a key set → the set of (resource:action) perms it covers (node + own perm).
+function permsForKeys(keys: Set<string>): Set<string> {
+  const perms = new Set<string>();
+  walk(props.menus, (n) => {
+    if (keys.has(n.key) && n.perm) perms.add(n.perm);
+  });
+  return perms;
+}
+
+async function save() {
+  if (props.role.built_in) return;
+  busy.value = true;
+  try {
+    // Diff perms: those newly covered → add, those no longer covered → remove.
+    const beforePerms = permsForKeys(initialKeys.value);
+    const afterPerms = permsForKeys(new Set(checkedKeys.value));
+    const add: PolicyChange[] = [];
+    const remove: PolicyChange[] = [];
+    for (const p of afterPerms) {
+      if (!beforePerms.has(p)) { const [r, a] = splitPerm(p); add.push({ resource: r, action: a }); }
+    }
+    for (const p of beforePerms) {
+      if (!afterPerms.has(p)) { const [r, a] = splitPerm(p); remove.push({ resource: r, action: a }); }
+    }
+    if (add.length || remove.length) {
+      await batchPolicy(props.role.id, { add, remove });
+    }
+    // Persist data scope (and custom dept ids) in the same save action.
+    await updateRole(props.role.id, {
+      name: metaName.value.trim(),
+      code: metaCode.value.trim(),
+      status: metaStatus.value,
+      order_num: Number(metaOrder.value ?? 0),
+      remark: metaRemark.value.trim(),
+      data_scope: dataScope.value,
+      dept_ids: dataScope.value === "custom" ? customDeptIds.value : [],
+    });
+    notify.success("角色设置已保存");
+    emit("changed"); // parent reloads roles; reset() re-seeds via the role watcher
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "保存失败");
+  } finally { busy.value = false; }
+}
+
+function walk(nodes: MenuNode[], fn: (n: MenuNode) => void) {
+  for (const n of nodes) {
+    fn(n);
+    if (n.children?.length) walk(n.children, fn);
+  }
+}
+</script>
+
+<style scoped>
+.role-editor { display: flex; flex-direction: column; gap: 16px; }
+.editor-head { display: flex; justify-content: space-between; align-items: flex-start; }
+.re-title { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.re-code { font-family: var(--ff-mono); font-size: 11.5px; color: var(--text-3); padding: 2px 7px; background: var(--surface-2); border-radius: 4px; }
+.tag-builtin { font-size: 10px; font-weight: 700; padding: 1px 5px; background: var(--purple-soft); color: var(--purple); border-radius: 3px; }
+.re-sub { font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
+
+.builtin-note { font-size: 12.5px; color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.meta-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.meta-grid.locked { opacity: .72; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-wide { grid-column: 1 / -1; }
+.label { font-size: 11.5px; color: var(--text-3); }
+.input { padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; background: var(--surface); min-width: 0; }
+.input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.input:disabled { background: var(--surface-2); color: var(--text-3); }
+.mono { font-family: var(--ff-mono); }
+.textarea { resize: vertical; min-height: 54px; }
+.editor-body { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: start; }
+.re-section { display: flex; flex-direction: column; gap: 8px; }
+.re-section.locked { opacity: .7; }
+.re-section-head { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .4px; display: flex; align-items: center; justify-content: space-between; }
+.tree-tools { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; }
+.link-btn { border: 0; background: none; color: var(--primary); font-size: 11.5px; cursor: pointer; padding: 2px 4px; }
+.link-btn:hover:not(:disabled) { text-decoration: underline; }
+.link-btn:disabled { color: var(--text-4); cursor: not-allowed; }
+.tool-sep { color: var(--border-strong); font-size: 11px; }
+.menu-tree-box { border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 440px; overflow-y: auto; background: var(--surface); }
+.dept-search { width: 100%; padding: 6px 10px; font-size: 12.5px; box-sizing: border-box; margin-bottom: 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
+.dept-search:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+.dept-tree-box { border: 1px solid var(--border); border-radius: 8px; padding: 6px; max-height: 220px; overflow-y: auto; background: var(--surface); }
+.empty-hint { color: var(--text-4); font-size: 12.5px; padding: 12px; }
+.menu-node { display: inline-flex; align-items: center; gap: 6px; }
+.menu-node.dir { font-weight: 600; }
+.perm-tag { font-family: var(--ff-mono); font-size: 10.5px; color: var(--primary); background: var(--primary-soft); padding: 1px 5px; border-radius: 3px; }
+.dir-tag { font-size: 10px; color: var(--text-4); }
+
+.scope-options { display: flex; flex-direction: column; gap: 4px; }
+.scope-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.scope-opt:hover { background: var(--surface-2); }
+.scope-opt input { accent-color: var(--primary); }
+.custom-depts { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.cd-head { font-size: 11.5px; color: var(--text-3); margin-bottom: 4px; }
+.check-list { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
+.check-list label { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+.check-list label:hover { background: var(--surface-2); }
+.check-list input { accent-color: var(--primary); }
+@media (max-width: 900px) {
+  .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .editor-body { grid-template-columns: 1fr; }
+}
+.muted { color: var(--text-4); font-size: 12.5px; padding: 6px; }
+
+.btn { padding: 7px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-sm { padding: 5px 12px; font-size: 12.5px; }
+</style>

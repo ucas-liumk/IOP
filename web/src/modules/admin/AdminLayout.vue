@@ -4,56 +4,11 @@
       <div class="nav-title">组织控制台</div>
       <div class="nav-sub">{{ tenantName }}</div>
 
-      <div class="nav-group">
-        <div class="group-title">概览</div>
-        <router-link to="/admin" class="nav-link" :class="{ active: $route.path === '/admin' }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
-          仪表盘
-        </router-link>
-      </div>
+      <!-- Nav is driven by /me/menus (auth.store.menusTenant) — visibility follows
+           the user's role policies + this tenant's enabled apps. -->
+      <DynamicNav :menus="auth.menusTenant" />
 
-      <div class="nav-group">
-        <div class="group-title">租户</div>
-        <router-link to="/admin/members" class="nav-link" :class="{ active: $route.path.startsWith('/admin/members') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-          成员
-        </router-link>
-        <router-link to="/admin/registrations" class="nav-link" :class="{ active: $route.path.startsWith('/admin/registrations') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-          注册申请
-          <span v-if="pendingApps > 0" class="badge-count">{{ pendingApps > 99 ? '99+' : pendingApps }}</span>
-        </router-link>
-        <router-link to="/admin/roles" class="nav-link" :class="{ active: $route.path.startsWith('/admin/roles') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          角色权限
-        </router-link>
-        <router-link to="/admin/departments" class="nav-link" :class="{ active: $route.path.startsWith('/admin/departments') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          部门
-        </router-link>
-        <router-link to="/admin/settings" class="nav-link" :class="{ active: $route.path.startsWith('/admin/settings') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33"/></svg>
-          租户设置
-        </router-link>
-        <router-link to="/admin/apps" class="nav-link" :class="{ active: $route.path.startsWith('/admin/apps') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          应用管理
-        </router-link>
-      </div>
-
-      <div class="nav-group">
-        <div class="group-title">系统</div>
-        <router-link to="/admin/audit" class="nav-link" :class="{ active: $route.path.startsWith('/admin/audit') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
-          审计日志
-        </router-link>
-        <router-link to="/admin/dict" class="nav-link" :class="{ active: $route.path.startsWith('/admin/dict') }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          字典管理
-        </router-link>
-      </div>
-
-      <div class="nav-group" v-if="admin.is_platform_admin">
+      <div class="nav-group" v-if="auth.hasPlatformAccess">
         <div class="group-title">平台</div>
         <router-link to="/platform" class="nav-link platform-link">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
@@ -70,22 +25,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted } from "vue";
 import { useAuthStore } from "@/shell/auth/auth.store";
-import { getMyAdminFlags, listRegistrations, type MeAdmin } from "./api/admin";
+import DynamicNav from "@/shell/layout/DynamicNav.vue";
 
 const auth = useAuthStore();
-const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false });
-const pendingApps = ref(0);
 
 const tenantName = computed(() => auth.tenant?.name ?? "—");
 
 onMounted(async () => {
-  admin.value = await getMyAdminFlags();
-  try {
-    const apps = await listRegistrations("tenant", "pending");
-    pendingApps.value = apps.length;
-  } catch {}
+  // Ensure the tenant menu tree is loaded (a hard reload into /admin restores
+  // tokens but the guard's restore() also fills this; load again if still empty).
+  if (auth.menusTenant.length === 0) await auth.loadMenus();
 });
 </script>
 
@@ -135,19 +86,6 @@ onMounted(async () => {
   background: var(--purple-soft); color: var(--purple);
   border-radius: 3px;
   letter-spacing: .3px;
-}
-.badge-count {
-  margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  font-size: 10.5px;
-  font-weight: 700;
-  background: var(--danger);
-  color: #fff;
-  border-radius: 9px;
-  display: inline-grid;
-  place-items: center;
 }
 
 .admin-main { padding: 28px 32px; background: var(--bg); min-width: 0; }

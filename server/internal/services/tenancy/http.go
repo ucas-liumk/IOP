@@ -29,8 +29,8 @@ func RegisterPublicRoutes(r *gin.RouterGroup, svc *Service) {
 
 // RegisterRoutes wires /tenants/* (platform admin).
 // Caller is expected to gate these with RBAC platform_admin.
-func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
-	r.POST("/tenants", func(c *gin.Context) {
+func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool, authz AuthzFunc) {
+	r.POST("/tenants", authz("org", "write"), func(c *gin.Context) {
 		var req CreateTenantCmd
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_request", "请求格式错误", err))
@@ -44,7 +44,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.Created(c, t)
 	})
 
-	r.GET("/tenants", func(c *gin.Context) {
+	r.GET("/tenants", authz("org", "read"), func(c *gin.Context) {
 		var p kernel.Pagination
 		_ = c.ShouldBindQuery(&p)
 		ts, err := svc.ListActiveTenants(c.Request.Context(), p)
@@ -55,7 +55,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"tenants": ts})
 	})
 
-	r.GET("/tenants/:id", func(c *gin.Context) {
+	r.GET("/tenants/:id", authz("org", "read"), func(c *gin.Context) {
 		id, err := kernel.ParseID(c.Param("id"))
 		if err != nil {
 			apiresp.Fail(c, errors.Wrap(errors.KindParam, "tenancy.invalid_id", "id 格式错误", err))
@@ -73,7 +73,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, t)
 	})
 
-	r.POST("/tenants/:id/suspend", func(c *gin.Context) {
+	r.POST("/tenants/:id/suspend", authz("org", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.SuspendTenant(c.Request.Context(), id, c.Query("reason")); err != nil {
 			apiresp.Fail(c, err)
@@ -82,7 +82,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/tenants/:id/resume", func(c *gin.Context) {
+	r.POST("/tenants/:id/resume", authz("org", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.ResumeTenant(c.Request.Context(), id); err != nil {
 			apiresp.Fail(c, err)
@@ -91,7 +91,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/tenants/:id/close", func(c *gin.Context) {
+	r.POST("/tenants/:id/close", authz("org", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		if err := svc.CloseTenant(c.Request.Context(), id); err != nil {
 			apiresp.Fail(c, err)
@@ -100,7 +100,7 @@ func RegisterRoutes(r *gin.RouterGroup, svc *Service, pool *pgxpool.Pool) {
 		apiresp.OK(c, gin.H{"ok": true})
 	})
 
-	r.POST("/tenants/:id/members", func(c *gin.Context) {
+	r.POST("/tenants/:id/members", authz("user", "write"), func(c *gin.Context) {
 		id, _ := kernel.ParseID(c.Param("id"))
 		var req struct {
 			PlatformUserID string `json:"platform_user_id" binding:"required"`

@@ -2,11 +2,13 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -40,10 +42,29 @@ func setupApp(t *testing.T) (*app.App, func()) {
 	return a, cleanup
 }
 
+// uniqSlug builds a collision-free, regex-valid slug. The previous scheme
+// (time.Now().UnixNano()%1e6) had only ~1e3 effective values on coarse clocks
+// and slugs are never freed (closed/suspended tenants keep the slug), so
+// accumulated test runs eventually collided ("slug already in use"). A crypto
+// random tail in base36 gives ~10^15 distinct values per run.
+func uniqSlug(prefix string) string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	tail := strconv.FormatUint(binary.BigEndian.Uint64(b[:]), 36)
+	if len(tail) > 12 {
+		tail = tail[:12]
+	}
+	s := prefix + tail
+	if len(s) > 32 {
+		s = s[:32]
+	}
+	return s
+}
+
 func mustCreateTenant(t *testing.T, a *app.App, slug, name string) *tenancy.Tenant {
 	t.Helper()
 	// Use unique slug to avoid collisions across runs
-	uniq := fmt.Sprintf("%s%d", slug, time.Now().UnixNano()%1e6)
+	uniq := uniqSlug(slug)
 	tt, err := a.Tenancy.CreateTenant(context.Background(), tenancy.CreateTenantCmd{Slug: uniq, Name: name})
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
@@ -54,7 +75,7 @@ func mustCreateTenant(t *testing.T, a *app.App, slug, name string) *tenancy.Tena
 
 func mustCreateUser(t *testing.T, a *app.App, prefix string) (id, email string) {
 	t.Helper()
-	email = fmt.Sprintf("%s+%d@iop.test", prefix, time.Now().UnixNano())
+	email = fmt.Sprintf("%s+%s@iop.test", prefix, uniqSlug(""))
 	u, err := a.IAM.RegisterUser(context.Background(), iam.RegisterCmd{
 		Email: email, Password: "Test1234abc!",
 	})

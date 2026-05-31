@@ -82,7 +82,7 @@
         <div class="info-item">
           <div class="info-label">角色</div>
           <div class="info-value">
-            <span v-if="admin.is_platform_admin" class="role-tag platform">平台管理员</span>
+            <span v-if="admin.has_platform_access" class="role-tag platform">平台角色</span>
             <span v-else-if="admin.is_tenant_admin" class="role-tag tenant">租户管理员</span>
             <span v-else class="role-tag">成员</span>
           </div>
@@ -141,7 +141,7 @@ const todayLabel = now.toLocaleDateString("zh-CN", {
 const env = import.meta.env.MODE === "development" ? "dev" : "prod";
 
 const myApps = ref<Manifest[]>([]);
-const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false });
+const admin = ref<MeAdmin>({ is_tenant_admin: false, is_platform_admin: false, has_platform_access: false });
 const version = ref<string>("—");
 
 onMounted(async () => {

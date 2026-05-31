@@ -92,6 +92,13 @@ func (s *Service) CreateTenant(ctx context.Context, cmd CreateTenantCmd) (*Tenan
 		}
 		return nil, errors.Wrap(errors.KindInternal, "tenancy.provision_failed", "租户初始化失败，请重试", err)
 	}
+	if _, err := s.EnsureRootDept(ctx, s.prov.pool, t); err != nil {
+		_ = s.prov.Drop(ctx, t.SchemaName)
+		if delErr := s.tenantRepo.Delete(ctx, t.ID); delErr != nil {
+			_ = s.tenantRepo.UpdateStatus(ctx, t.ID, StatusSuspended, s.clock.Now())
+		}
+		return nil, errors.Wrap(errors.KindInternal, "tenancy.root_org_failed", "租户根组织初始化失败，请重试", err)
+	}
 
 	_ = s.bus.Publish(ctx, "tenancy.tenant_created", map[string]any{
 		"tenant_id": t.ID, "slug": t.Slug, "name": t.Name,
@@ -128,10 +135,7 @@ func (s *Service) CloseTenant(ctx context.Context, id kernel.ID) error {
 	if err := s.tenantRepo.UpdateStatus(ctx, id, StatusClosed, s.clock.Now()); err != nil {
 		return err
 	}
-	// Schema drop is gated to 30-day retention in real deployments; tests/dev drop immediately.
-	if err := s.prov.Drop(ctx, t.SchemaName); err != nil {
-		return err
-	}
+	// Closing a tenant disables access but keeps the tenant schema for retention/audit.
 	_ = s.bus.Publish(ctx, "tenancy.tenant_closed", map[string]any{"tenant_id": id})
 	return nil
 }
@@ -216,6 +220,10 @@ func (s *Service) SyncAllSchemas(ctx context.Context) (synced int, err error) {
 	for _, t := range tenants {
 		if e := s.prov.Provision(ctx, t.SchemaName); e != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", t.SchemaName, e))
+			continue
+		}
+		if _, e := s.EnsureRootDept(ctx, s.prov.pool, t); e != nil {
+			failures = append(failures, fmt.Sprintf("%s root org: %v", t.SchemaName, e))
 			continue
 		}
 		synced++

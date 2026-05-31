@@ -87,7 +87,10 @@ func TestSmoke_EndToEnd(t *testing.T) {
 		// Add a panic route to verify Recover middleware.
 		// We can't easily mutate the engine after construction here, so probe
 		// an endpoint that returns an error envelope and verify shape.
-		resp, _ := http.Get(srv.URL + "/api/dict/nope")
+		resp, err := http.Get(srv.URL + "/api/dict/nope")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
 		defer resp.Body.Close()
 		var body map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&body)

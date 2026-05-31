@@ -96,6 +96,13 @@ func (r *PGPlanRepo) List(ctx context.Context, f domain.PlanFilter) ([]*domain.P
 			where += ` AND owner = $` + itoa(idx)
 			args = append(args, f.Owner)
 			idx++
+		} else if !f.AllOwners {
+			if len(f.Owners) == 0 {
+				return nil
+			}
+			where += ` AND owner = ANY($` + itoa(idx) + `::uuid[])`
+			args = append(args, idStrings(f.Owners))
+			idx++
 		}
 		if f.Level != "" {
 			where += ` AND level = $` + itoa(idx)
@@ -132,13 +139,9 @@ func (r *PGPlanRepo) List(ctx context.Context, f domain.PlanFilter) ([]*domain.P
 		}
 		// Hydrate items in one batch query (avoid N+1).
 		if len(ids) > 0 {
-			idStrings := make([]string, len(ids))
-			for i, id := range ids {
-				idStrings[i] = string(id)
-			}
 			itRows, err := tx.Query(ctx,
 				`SELECT id, plan_id, title, weight, progress_pct, COALESCE(progress_note,''), status, sort_order, created_at, updated_at
-				 FROM okr_plan_item WHERE plan_id = ANY($1::uuid[]) ORDER BY sort_order`, idStrings)
+				 FROM okr_plan_item WHERE plan_id = ANY($1::uuid[]) ORDER BY sort_order`, idStrings(ids))
 			if err != nil {
 				return err
 			}
@@ -193,6 +196,14 @@ func nullableID(id *kernel.ID) any {
 		return nil
 	}
 	return *id
+}
+
+func idStrings(ids []kernel.ID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
+	}
+	return out
 }
 
 // small helper to avoid pulling in strconv

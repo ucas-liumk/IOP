@@ -58,6 +58,24 @@
   --cat-hr:       #7c4ddb;
   --cat-data:     #0fa8a3;
   --cat-admin:    #6b7891;
+  --cat-goal:     #2563eb;
+  --cat-goal-soft:#edf4ff;
+  --cat-task:     #2a8856;
+  --cat-task-soft:#e8f6ef;
+  --cat-workflow: #7c4ddb;
+  --cat-workflow-soft:#f2ecff;
+  --cat-form:     #0f8fbd;
+  --cat-form-soft:#e5f7fd;
+  --cat-knowledge:#8b5cf6;
+  --cat-knowledge-soft:#f2edff;
+  --cat-project:  #e8920e;
+  --cat-project-soft:#fff4df;
+  --cat-creative: #b14fa0;
+  --cat-creative-soft:#faedf7;
+  --cat-content:  #d14f27;
+  --cat-content-soft:#fff0ea;
+  --cat-resource: #55708f;
+  --cat-resource-soft:#eef3f8;
 
   /* Layout — left app rail */
   --rail-w: 76px;

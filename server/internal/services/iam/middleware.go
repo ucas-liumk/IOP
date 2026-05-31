@@ -27,7 +27,8 @@ func JWTAuth(svc *Service) gin.HandlerFunc {
 			apiresp.Fail(c, err)
 			return
 		}
-		ctx := kernel.WithMemberID(c.Request.Context(), claims.MemberID)
+		ctx := kernel.WithPlatformUserID(c.Request.Context(), claims.PlatformUserID)
+		ctx = kernel.WithMemberID(ctx, claims.MemberID)
 		if claims.TenantID != "" {
 			ctx = kernel.WithTenantID(ctx, claims.TenantID)
 		}

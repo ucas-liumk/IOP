@@ -11,15 +11,19 @@ import (
 	"github.com/leo/iop/server/internal/shared/kernel"
 )
 
-// appEnabledGate returns 403 unless the caller's tenant has enabled the app.
+// appEnabledGate returns 403 unless the app is enabled for the caller: either
+// the caller's tenant has installed it (org-level) OR the caller added it to
+// their own per-user workspace.
 func appEnabledGate(check AppEnabledFunc, code string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tid, ok := kernel.TenantIDFromContext(c.Request.Context())
+		ctx := c.Request.Context()
+		tid, ok := kernel.TenantIDFromContext(ctx)
 		if !ok || tid == "" {
 			apiresp.Fail(c, errors.New(errors.KindForbidden, "app.no_tenant", "请先选择租户"))
 			return
 		}
-		enabled, err := check(c.Request.Context(), tid, code)
+		puid, _ := kernel.PlatformUserIDFromContext(ctx)
+		enabled, err := check(ctx, tid, puid, code)
 		if err != nil {
 			apiresp.Fail(c, err)
 			return
@@ -87,6 +91,18 @@ func (r *Registry) AllPermissions() []Permission {
 	out := []Permission{}
 	for _, m := range mods {
 		out = append(out, m.Manifest().Permissions...)
+	}
+	return out
+}
+
+// AllMenus aggregates every MenuNode declared by every module.
+// Returns a flat list (built-in console menus are added separately by the app
+// layer). Used to assemble the console menu catalog / nav trees.
+func (r *Registry) AllMenus() []MenuNode {
+	mods := r.All()
+	out := []MenuNode{}
+	for _, m := range mods {
+		out = append(out, m.Manifest().Menus...)
 	}
 	return out
 }

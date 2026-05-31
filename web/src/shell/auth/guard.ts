@@ -19,7 +19,7 @@ export const requireAuth: NavigationGuard = async (to, _from, next) => {
 };
 
 // requirePlatformAdmin is a per-route beforeEnter for platform-only screens
-// (用户管理 / 组织机构). Defense-in-depth + UX — the backend PlatformAdminRequired
+// (用户管理 / 组织机构). Defense-in-depth + UX — the backend PlatformAccess
 // middleware remains the authoritative gate; this just avoids rendering a shell
 // that would only fire failing requests. Placed on the child route so it re-runs
 // on SPA navigation, not just on first entry into the /admin subtree.
@@ -28,7 +28,7 @@ export const requirePlatformAdmin: NavigationGuard = async (_to, _from, next) =>
   if (auth.loggedIn && !auth.restored) {
     await auth.restore();
   }
-  if (!auth.isPlatformAdmin) {
+  if (!auth.hasPlatformAccess) {
     // Not a platform admin → send to their normal landing (workspace / tenant console).
     return next({ path: "/" });
   }
@@ -39,7 +39,7 @@ export const requirePlatformAdmin: NavigationGuard = async (_to, _from, next) =>
 export function homeForRole(): string {
   const auth = useAuthStore();
   if (auth.user?.password_must_change) return "/me/security";
-  if (auth.isPlatformAdmin) return "/platform";
+  if (auth.hasPlatformAccess) return "/platform";
   return "/";
 }
 

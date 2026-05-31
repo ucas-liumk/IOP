@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/leo/iop/server/internal/services/tenancy"
@@ -173,6 +174,9 @@ func (s *Service) SwitchTenant(ctx context.Context, sessionID, tenantID kernel.I
 	if mem == nil {
 		return nil, errors.New(errors.KindForbidden, "iam.not_a_member", "不是该租户成员")
 	}
+	if mem.Status != "active" {
+		return nil, errors.New(errors.KindForbidden, "iam.membership_disabled", "该租户账号已停用")
+	}
 	t, err := s.tenants.GetTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -207,6 +211,20 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	tid, mid := claims.TenantID, claims.MemberID
 	var tidP, midP *kernel.ID
 	if tid != "" {
+		mem, err := s.tenants.GetMembership(ctx, sess.PlatformUserID, tid)
+		if err != nil {
+			return nil, err
+		}
+		if mem == nil || mem.Status != "active" {
+			return nil, errors.New(errors.KindForbidden, "iam.membership_disabled", "该租户账号已停用")
+		}
+		t, err := s.tenants.GetTenant(ctx, tid)
+		if err != nil {
+			return nil, err
+		}
+		if t == nil || t.Status != tenancy.StatusActive {
+			return nil, errors.New(errors.KindForbidden, "iam.tenant_inactive", "租户不可用")
+		}
 		tidP = &tid
 	}
 	if mid != "" {
@@ -347,12 +365,9 @@ func (s *Service) Enforce(ctx context.Context, memberID, tenantID kernel.ID, res
 	if len(roles) == 0 {
 		return errors.New(errors.KindForbidden, "iam.no_role", "无权限")
 	}
-	// Built-in shortcut: tenant_admin / platform_admin bypass.
-	for _, r := range roles {
-		if r.Code == "platform_admin" || r.Code == "tenant_admin" {
-			return nil
-		}
-	}
+	// No code-level admin bypass: built-in admin roles (tenant_admin/platform_admin)
+	// carry an all-access '*'/'*' role_policy (seeded in migration 000010), so they
+	// pass the generic policy match below like any other role.
 	ids := make([]kernel.ID, len(roles))
 	for i, r := range roles {
 		ids[i] = r.ID
@@ -379,9 +394,65 @@ func matchPolicy(pattern, value string) bool {
 	return false
 }
 
+// PermitsRule reports whether the given set of effective policy rules permits
+// (resource, action). It mirrors Enforce's match (wildcard-aware, effect=allow)
+// but operates IN MEMORY on rules already fetched — so callers can pull a user's
+// rules ONCE and test many resource:action pairs (e.g. filtering a menu tree)
+// without per-check DB round trips.
+func PermitsRule(rules []PolicyRule, resource, action string) bool {
+	for _, p := range rules {
+		if p.Effect == "allow" && matchPolicy(p.Resource, resource) && matchPolicy(p.Action, action) {
+			return true
+		}
+	}
+	return false
+}
+
+// MemberPerms returns the member's effective policy rules for the tenant
+// (ListMemberRoles → ListPolicyForRoles), de-referenced to values. Fetch once,
+// then test many resource:action pairs with PermitsRule. Returns an empty slice
+// (no error) when the member has no roles.
+func (s *Service) MemberPerms(ctx context.Context, memberID, tenantID kernel.ID) ([]PolicyRule, error) {
+	roles, err := s.repo.ListMemberRoles(ctx, memberID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if len(roles) == 0 {
+		return []PolicyRule{}, nil
+	}
+	ids := make([]kernel.ID, len(roles))
+	for i, r := range roles {
+		ids[i] = r.ID
+	}
+	pols, err := s.repo.ListPolicyForRoles(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PolicyRule, 0, len(pols))
+	for _, p := range pols {
+		if p != nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
 // GrantRoleByCode grants a role (by code) to a member.
 func (s *Service) GrantRoleByCode(ctx context.Context, memberID, tenantID kernel.ID, roleCode string) error {
-	role, err := s.repo.GetRoleByCode(ctx, roleCode, nil)
+	roleCode = strings.TrimSpace(roleCode)
+	if !tenantMemberRoleGrantAllowed(roleCode) {
+		return errors.New(errors.KindForbidden, "iam.platform_role_forbidden", "不能给租户用户分配平台管理员角色")
+	}
+	if err := s.ensureTenantMemberExists(ctx, memberID, tenantID); err != nil {
+		return err
+	}
+	role, err := s.repo.GetRoleByCode(ctx, roleCode, &tenantID)
+	if err != nil {
+		return err
+	}
+	if role == nil {
+		role, err = s.repo.GetRoleByCode(ctx, roleCode, nil)
+	}
 	if err != nil {
 		return err
 	}
@@ -391,4 +462,57 @@ func (s *Service) GrantRoleByCode(ctx context.Context, memberID, tenantID kernel
 	return s.repo.GrantRole(ctx, &RoleGrant{
 		RoleID: role.ID, MemberID: memberID, TenantID: tenantID, GrantedAt: s.clock.Now(),
 	})
+}
+
+// GrantRoleByID grants a role (by id) to a member of the given tenant. The role
+// must be visible in that tenant — either a platform-wide built-in (tenant_id IS
+// NULL) or one owned by this tenant — so a platform admin acting on org :tid can
+// only grant roles that legitimately belong to it. The (role,member,tenant) grant
+// is idempotent.
+func (s *Service) GrantRoleByID(ctx context.Context, memberID, tenantID, roleID kernel.ID) error {
+	pool := s.repo.(*pgRepo).pool
+	if err := s.ensureTenantMemberExists(ctx, memberID, tenantID); err != nil {
+		return err
+	}
+	var roleCode string
+	if err := pool.QueryRow(ctx,
+		`SELECT code FROM public.role
+		 WHERE id = $1 AND (tenant_id = $2 OR (tenant_id IS NULL AND code IN ('tenant_admin','tenant_member')))
+		   AND deleted_at IS NULL AND COALESCE(status,'active') = 'active'`,
+		roleID, tenantID).Scan(&roleCode); err != nil {
+		if err == pgx.ErrNoRows {
+			return errors.New(errors.KindNotFound, "iam.role_not_found", "角色不存在")
+		}
+		return err
+	}
+	if !tenantMemberRoleGrantAllowed(roleCode) {
+		return errors.New(errors.KindForbidden, "iam.platform_role_forbidden", "不能给租户用户分配平台管理员角色")
+	}
+	return s.repo.GrantRole(ctx, &RoleGrant{
+		RoleID: roleID, MemberID: memberID, TenantID: tenantID, GrantedAt: s.clock.Now(),
+	})
+}
+
+func (s *Service) ensureTenantMemberExists(ctx context.Context, memberID, tenantID kernel.ID) error {
+	pool := s.repo.(*pgRepo).pool
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM public.tenant_membership
+		 WHERE member_id = $1 AND tenant_id = $2)`,
+		memberID, tenantID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New(errors.KindNotFound, "iam.member_not_found", "成员不存在")
+	}
+	return nil
+}
+
+func tenantMemberRoleGrantAllowed(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "", "super_admin", "platform_admin", "sys_admin", "sec_admin", "audit_admin":
+		return false
+	default:
+		return true
+	}
 }

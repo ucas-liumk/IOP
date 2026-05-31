@@ -56,7 +56,16 @@ services:
       minio: { condition: service_healthy }
     environment:
       IOP_ENV:               prod
-      IOP_DB_DSN:            postgres://${IOP_DB_USER:-iop}:${IOP_DB_PASSWORD}@db:5432/${IOP_DB_NAME:-iop}?sslmode=disable
+      IOP_DB_DSN:            postgres://${IOP_DB_USER:-iop}:${IOP_DB_PASSWORD}@db:5432/${IOP_DB_NAME:-iop}?sslmode=${IOP_DB_SSLMODE:-disable}
+      # The bundled `db` runs on an internal-only compose network (no host port),
+      # so its link is trusted and sslmode=disable is acceptable. If you point IOP
+      # at an EXTERNAL / managed Postgres, set IOP_DB_SSLMODE=require in your .env
+      # and remove IOP_DB_ALLOW_INSECURE below.
+      IOP_DB_ALLOW_INSECURE: "true"
+      # CORS allowlist is REQUIRED in prod (a wildcard "*" is rejected at boot).
+      # Set IOP_ALLOWED_ORIGINS in your .env to your real web origin(s),
+      # comma-separated, e.g. https://iop.example.com
+      IOP_SERVER_ALLOWED_ORIGINS: ${IOP_ALLOWED_ORIGINS:?set IOP_ALLOWED_ORIGINS to your web origin(s), comma-separated}
       IOP_REDIS_ADDR:        redis:6379
       IOP_MINIO_ENDPOINT:    minio:9000
       IOP_MINIO_ACCESS_KEY:  ${IOP_MINIO_ACCESS_KEY}

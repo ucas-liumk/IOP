@@ -9,8 +9,15 @@ import (
 	redislib "github.com/redis/go-redis/v9"
 
 	"github.com/leo/iop/server/internal/config"
+	"github.com/leo/iop/server/internal/contexts/approval"
+	"github.com/leo/iop/server/internal/contexts/books"
+	"github.com/leo/iop/server/internal/contexts/docs"
+	"github.com/leo/iop/server/internal/contexts/lcform"
+	"github.com/leo/iop/server/internal/contexts/mindmap"
+	"github.com/leo/iop/server/internal/contexts/news"
 	"github.com/leo/iop/server/internal/contexts/okr"
 	okriface "github.com/leo/iop/server/internal/contexts/okr/interface"
+	"github.com/leo/iop/server/internal/contexts/project"
 	"github.com/leo/iop/server/internal/contexts/tasks"
 	"github.com/leo/iop/server/internal/infrastructure/health"
 	loggerinfra "github.com/leo/iop/server/internal/infrastructure/logger"
@@ -136,6 +143,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	if err := iam.SeedDefaults(ctx, iamSvc, tenantSvc, pool, logger); err != nil {
 		logger.Warn("seed default admin failed", zap.Error(err))
 	}
+	if err := iamSvc.SeedPlatformRBAC(ctx); err != nil {
+		return nil, nil, fmt.Errorf("seed platform rbac: %w", err)
+	}
 
 	// Bring every existing tenant schema up to date with the latest tenant-template
 	// migrations (e.g. new module tables). Idempotent; best-effort on boot.
@@ -145,10 +155,18 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		logger.Info("tenant schemas synced", zap.Int("count", n))
 	}
 
+	// Demo seed: ensure the 北京市人民政府 (bjgov) demo organization + a realistic dept
+	// tree + sample 公务员 exist. Guarded so it never runs in production — enabled in
+	// dev (or forced on via IOP_SEED_DEMO). Idempotent across restarts.
+	demoEnabled := !cfg.IsProd() || iam.DemoSeedForced()
+	if err := iam.SeedDemoOrg(ctx, iamSvc, tenantSvc, pool, demoEnabled, logger); err != nil {
+		logger.Warn("seed demo org failed", zap.Error(err))
+	}
+
 	tenantDB := tenantdb.NewTenantDB(pool)
 
 	// Audit: tenant lookup via tenancy service
-	auditSvc := audit.NewService(tenantDB,
+	auditSvc := audit.NewService(pool, tenantDB,
 		func(c context.Context, id kernel.ID) (string, bool) {
 			t, _ := tenantSvc.GetTenant(c, id)
 			if t == nil {
@@ -159,7 +177,10 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	auditSvc.Subscribe(bus, []string{
 		"tenancy.tenant_created", "tenancy.tenant_suspended", "tenancy.tenant_resumed",
 		"tenancy.tenant_closed", "tenancy.member_joined",
+		"tenancy.dept_created", "tenancy.dept_updated", "tenancy.dept_deleted",
+		"tenancy.dept_status_changed", "tenancy.dept_moved", "tenancy.dept_imported",
 		"iam.user_logged_in", "iam.user_logged_out", "iam.login_failed",
+		"iam.role_created", "iam.role_updated", "iam.role_deleted", "iam.role_policy_updated",
 		"okr.plan_created", "okr.plan_item_completed", "okr.plan_closed",
 		"okr.daily_submitted", "okr.weekly_submitted",
 	})
@@ -198,16 +219,24 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	}
 	registry.Register(okr.New(deps))
 	registry.Register(tasks.New(deps))
+	registry.Register(approval.New(deps))
+	registry.Register(lcform.New(deps))
+	registry.Register(docs.New(deps))
+	registry.Register(project.New(deps))
+	registry.Register(mindmap.New(deps))
+	registry.Register(news.New(deps))
+	registry.Register(books.New(deps))
 	// Add future modules here, e.g.:
 	//   registry.Register(crm.New(deps))
-	//   registry.Register(approval.New(deps))
 
-	// Give the built-in tenant_member role read/write on every registered module's
-	// resources so members can use apps their tenant enabled (RBAC stays enforced;
-	// delete actions remain admin-only). Idempotent.
+	// Give the built-in tenant_member role every module action EXCEPT the
+	// admin-only ones (delete/manage), so members can actually use apps their
+	// tenant enabled — read/write plus member workflows like submit/approve/borrow
+	// (e.g. initiate or approve an approval, borrow/return a book). delete/manage
+	// stay reserved for tenant_admin. RBAC stays enforced; idempotent.
 	var memberPerms [][2]string
 	for _, p := range registry.AllPermissions() {
-		if p.Action == "read" || p.Action == "write" {
+		if p.Action != "delete" && p.Action != "manage" {
 			memberPerms = append(memberPerms, [2]string{p.Resource, p.Action})
 		}
 	}
@@ -237,6 +266,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 		Modules:     registry,
 		AppStore:    appStore,
 	}
+	if err := a.syncMenuCatalog(ctx); err != nil {
+		logger.Warn("sync menu catalog failed", zap.Error(err))
+	}
 
 	cleanup := func() {
 		_ = auditSvc.Close()
@@ -258,13 +290,16 @@ func (a *App) Engine() *gin.Engine {
 	if a.Cfg.Env == "dev" {
 		rlCfg = middleware.DevRateLimit()
 	}
-	r.Use(middleware.RateLimit(a.RDB, rlCfg))
-	r.Use(middleware.Idempotency(a.RDB))
+	rateLimit := middleware.RateLimit(a.RDB, rlCfg)
+	idempotency := middleware.Idempotency(a.RDB)
 
 	api := r.Group("/api")
-	dictionary.RegisterRoutes(api, a.Dictionary)
-	iam.RegisterRoutes(api, a.IAM, a.Tenancy, a.Pool)
-	tenancy.RegisterPublicRoutes(api, a.Tenancy)
+	publicAPI := api.Group("")
+	publicAPI.Use(rateLimit)
+	publicAPI.Use(idempotency)
+	dictionary.RegisterRoutes(publicAPI, a.Dictionary)
+	iam.RegisterRoutes(publicAPI, a.IAM, a.Tenancy, a.Pool)
+	tenancy.RegisterPublicRoutes(publicAPI, a.Tenancy)
 
 	// Authenticated tenant-scoped group
 	authT := api.Group("")
@@ -273,6 +308,8 @@ func (a *App) Engine() *gin.Engine {
 	// Block must-change users from the privileged/business surface (authoritative;
 	// allowlists /api/me* + /api/auth/* so they can still change their password).
 	authT.Use(iam.PasswordChangeGate(a.IAM))
+	authT.Use(rateLimit)
+	authT.Use(idempotency)
 	audit.RegisterRoutes(authT, a.Audit)
 	notification.RegisterRoutes(authT, a.Notif)
 	if a.FileStorage != nil {
@@ -288,29 +325,49 @@ func (a *App) Engine() *gin.Engine {
 	authz := func(resource, action string) gin.HandlerFunc {
 		return iam.RBAC(a.IAM, resource, action)
 	}
+	dataScope := func(ctx context.Context, memberID, tenantID kernel.ID) (module.ScopeSpec, error) {
+		spec, err := a.IAM.ResolveDataScope(ctx, memberID, tenantID)
+		if err != nil {
+			return module.ScopeSpec{}, err
+		}
+		return module.ScopeSpec{
+			Kind:         spec.Kind,
+			DeptIDs:      spec.DeptIDs,
+			SelfMemberID: spec.SelfMemberID,
+		}, nil
+	}
 	deps := module.Deps{
-		Pool:     a.Pool,
-		Tenant:   a.Tenant,
-		Platform: a.Platform,
-		Bus:      a.Bus,
-		Logger:   a.Logger,
-		Clock:    kernel.RealClock{},
-		Authz:    authz,
-		AppEnabled: func(ctx context.Context, tenantID kernel.ID, code string) (bool, error) {
-			return a.AppStore.IsInstalled(ctx, tenantID, code)
+		Pool:      a.Pool,
+		Tenant:    a.Tenant,
+		Platform:  a.Platform,
+		Bus:       a.Bus,
+		Logger:    a.Logger,
+		Clock:     kernel.RealClock{},
+		Authz:     authz,
+		DataScope: dataScope,
+		AppEnabled: func(ctx context.Context, tenantID, platformUserID kernel.ID, code string) (bool, error) {
+			return a.AppStore.IsEnabledForUser(ctx, tenantID, platformUserID, code)
 		},
 	}
 	a.Modules.MountAll(authT, deps)
 	// Backward-compat: also mount OKR at the flat /api/plans /api/reports /api/rollups paths
 	// so the existing frontend keeps working without recompile. Same RBAC gating.
 	if okrMod, _ := a.Modules.Get("okr").(*okr.Module); okrMod != nil {
-		okriface.RegisterRoutes(authT, okrMod.AppService(), authz)
+		okriface.RegisterRoutes(authT, okrMod.AppService(), authz, a.Tenant, dataScope)
 	}
 
 	// Personal /me routes — auth only (no admin gate)
 	authOnly := api.Group("")
 	authOnly.Use(iam.JWTAuth(a.IAM))
+	authOnly.Use(iam.PasswordChangeGate(a.IAM))
+	authOnly.Use(rateLimit)
+	authOnly.Use(idempotency)
 	iam.RegisterMeRoutes(authOnly, a.IAM)
+	// Effective menu tree + flat perms for the current user. On authOnly (no
+	// TenantLoader) so a platform-only user with no tenant context can still load
+	// platform menus; tenant console reads tenant context from claims when present
+	// (and returns an empty tree when absent rather than erroring).
+	a.RegisterMeMenuRoutes(authOnly)
 	// /me/apps needs tenant context; mount under authT (after TenantLoader)
 	appstore.RegisterMeRoutes(authT, a.AppStore)
 
@@ -318,14 +375,17 @@ func (a *App) Engine() *gin.Engine {
 	// context + tenant_admin role. This is the per-organization admin surface.
 	admin := authT.Group("")
 	admin.Use(iam.TenantAdminRequired(a.IAM))
-	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool)
-	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool)
+	tenancy.RegisterAdminRoutes(admin, a.Tenancy, a.Pool, authz)
+	iam.RegisterAdminRoutes(admin, a.IAM, a.Pool, authz)
+	audit.RegisterAdminRoutes(admin, a.Audit, authz)
 	dictionary.RegisterAdminRoutes(admin, dictionary.AdminConfig{
 		Memory:   a.DictMemory,
 		TenantDB: a.Tenant,
-	}, []string{"plan_level", "report_type"})
-	appstore.RegisterAdminRoutes(admin, a.AppStore)
-	module.RegisterAdminRoutes(admin, a.Modules)
+	}, []string{"plan_level", "report_type"}, authz)
+	appstore.RegisterAdminRoutes(admin, a.AppStore, authz)
+	module.RegisterAdminRoutes(admin, a.Modules, authz)
+	// Complete tenant-console menu catalog (unfiltered) for the role editor.
+	a.RegisterTenantMenuCatalogRoute(admin, authz)
 
 	// === Platform console (/platform/*, /tenants) === GLOBAL, tenant-LESS.
 	// Gated by the global is_platform_admin flag (PlatformAdminRequired). Mounted
@@ -335,9 +395,37 @@ func (a *App) Engine() *gin.Engine {
 	platform := api.Group("")
 	platform.Use(iam.JWTAuth(a.IAM))
 	platform.Use(iam.PasswordChangeGate(a.IAM))
-	platform.Use(iam.PlatformAdminRequired(a.IAM))
-	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool)
-	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool)
+	platform.Use(iam.PlatformAccess(a.IAM))
+	platform.Use(rateLimit)
+	platform.Use(idempotency)
+	platformAuthz := func(resource, action string) gin.HandlerFunc {
+		return iam.PlatformAuthz(a.IAM, a.Audit, resource, action)
+	}
+	iam.RegisterPlatformAdminRoutes(platform, a.IAM, a.Pool, a.Audit)
+	iam.RegisterPlatformRBACRoutes(platform, a.IAM, a.Audit)
+	// P3 platform-console extras: notice / params / operation+login logs /
+	// online users / monitor / cron jobs. Each route is individually gated with
+	// PlatformAuthz(resource:action).
+	iam.RegisterPlatformExtrasRoutes(platform, a.IAM, a.Audit, a.Pool, &monitorProbe{health: a.Health, rdb: a.RDB})
+	// Platform-side org governance: manage ANY organization's department tree by
+	// passing the org's tenant id (/platform/orgs/:tid/depts*). Reuses the tenant
+	// console's dept service funcs; gated per-route with the platform RBAC policy
+	// (org:read / org:write). authz is injected so tenancy stays free of iam.
+	tenancy.RegisterRoutes(platform, a.Tenancy, a.Pool, platformAuthz)
+	tenancy.RegisterPlatformOrgRoutes(platform, a.Tenancy, a.Pool, platformAuthz)
+	// Platform-side org governance: manage ANY organization's MEMBERS (+ that org's
+	// posts/roles pickers) by passing the org's tenant id
+	// (/platform/orgs/:tid/members*). Reuses the tenant console's member service
+	// funcs (tenancy: members/posts; iam: import/roles); gated per-route with the
+	// platform RBAC policy (user:read / user:write). Lives in iam (not tenancy)
+	// because member management spans both services and iam already imports
+	// tenancy — registering here keeps the wiring acyclic.
+	iam.RegisterPlatformOrgMemberRoutes(platform, a.IAM, a.Audit, a.Pool)
+	// Platform-side app management: choose any tenant explicitly and manage that
+	// tenant's enabled apps + display categories without switching tenant context.
+	appstore.RegisterPlatformRoutes(platform, a.AppStore, platformAuthz)
+	// Complete platform-console menu catalog (unfiltered) for the role editor.
+	a.RegisterPlatformMenuCatalogRoute(platform, platformAuthz)
 
 	return r
 }

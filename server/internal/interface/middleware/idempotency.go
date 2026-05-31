@@ -38,10 +38,18 @@ func Idempotency(rdb *redis.Client) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// Compose a scoped key: tenant + member + key
+		// Compose a scoped key: tenant + authenticated principal + client key.
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		mid, _ := kernel.MemberIDFromContext(c.Request.Context())
-		rkey := "idem:" + string(tid) + ":" + string(mid) + ":" + key
+		principal := "m:" + string(mid)
+		if mid == "" {
+			if uid, ok := kernel.PlatformUserIDFromContext(c.Request.Context()); ok && uid != "" {
+				principal = "u:" + string(uid)
+			} else {
+				principal = "ip:" + c.ClientIP()
+			}
+		}
+		rkey := "idem:" + string(tid) + ":" + principal + ":" + key
 
 		ctx := c.Request.Context()
 		val, err := rdb.Get(ctx, rkey).Result()

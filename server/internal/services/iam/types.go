@@ -36,11 +36,15 @@ type Session struct {
 
 // Role + policy + grant.
 type Role struct {
-	ID        kernel.ID  `json:"id"`
-	TenantID  *kernel.ID `json:"tenant_id,omitempty"`
-	Code      string     `json:"code"`
-	Name      string     `json:"name"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID          kernel.ID  `json:"id"`
+	TenantID    *kernel.ID `json:"tenant_id,omitempty"`
+	Code        string     `json:"code"`
+	Name        string     `json:"name"`
+	Status      string     `json:"status"`
+	OrderNum    int        `json:"order_num"`
+	Remark      string     `json:"remark,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	MemberCount int        `json:"member_count"`
 }
 
 type PolicyRule struct {

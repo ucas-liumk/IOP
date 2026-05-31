@@ -35,7 +35,7 @@ func (r *Repo) UpdateList(ctx context.Context, owner, id kernel.ID, name, color 
 	return r.db.Transaction(ctx, func(tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
 			`UPDATE task_list SET name=$1, color=$2, sort_order=$3, archived=$4, updated_at=now()
-			 WHERE id=$5 AND owner=$6`,
+			 WHERE id=$5 AND owner=$6 AND deleted_at IS NULL`,
 			name, color, sortOrder, archived, id, owner)
 		if err != nil {
 			return err
@@ -49,12 +49,29 @@ func (r *Repo) UpdateList(ctx context.Context, owner, id kernel.ID, name, color 
 
 func (r *Repo) DeleteList(ctx context.Context, owner, id kernel.ID) error {
 	return r.db.Transaction(ctx, func(tx pgx.Tx) error {
-		ct, err := tx.Exec(ctx, `DELETE FROM task_list WHERE id=$1 AND owner=$2`, id, owner)
+		ct, err := tx.Exec(ctx,
+			`UPDATE task_list
+			 SET deleted_at=now(), updated_at=now()
+			 WHERE id=$1 AND owner=$2 AND deleted_at IS NULL`, id, owner)
 		if err != nil {
 			return err
 		}
 		if ct.RowsAffected() == 0 {
 			return pgx.ErrNoRows
+		}
+		_, err = tx.Exec(ctx,
+			`WITH RECURSIVE tree AS (
+			   SELECT id FROM task WHERE list_id=$1 AND owner=$2 AND deleted_at IS NULL
+			   UNION ALL
+			   SELECT t.id FROM task t
+			   JOIN tree p ON t.parent_id = p.id
+			   WHERE t.owner=$2 AND t.deleted_at IS NULL
+			 )
+			 UPDATE task
+			 SET deleted_at=now(), updated_at=now()
+			 WHERE id IN (SELECT id FROM tree)`, id, owner)
+		if err != nil {
+			return err
 		}
 		return nil
 	})
@@ -71,9 +88,9 @@ func (r *Repo) ListLists(ctx context.Context, owner kernel.ID) ([]*domain.TaskLi
 			   SELECT list_id,
 			          count(*) FILTER (WHERE parent_id IS NULL) AS total,
 			          count(*) FILTER (WHERE parent_id IS NULL AND status='done') AS done
-			   FROM task GROUP BY list_id
+			   FROM task WHERE deleted_at IS NULL GROUP BY list_id
 			 ) c ON c.list_id = l.id
-			 WHERE l.owner=$1
+			 WHERE l.owner=$1 AND l.deleted_at IS NULL
 			 ORDER BY l.archived, l.sort_order, l.created_at`, owner)
 		if err != nil {
 			return err
@@ -98,7 +115,7 @@ func (r *Repo) GetList(ctx context.Context, owner, id kernel.ID) (*domain.TaskLi
 	err := r.db.Transaction(ctx, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx,
 			`SELECT id, owner, name, color, sort_order, archived, created_at, updated_at
-			 FROM task_list WHERE id=$1 AND owner=$2`, id, owner)
+			 FROM task_list WHERE id=$1 AND owner=$2 AND deleted_at IS NULL`, id, owner)
 		var x domain.TaskList
 		err := row.Scan(&x.ID, &x.Owner, &x.Name, &x.Color, &x.SortOrder, &x.Archived, &x.CreatedAt, &x.UpdatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -147,7 +164,7 @@ func (r *Repo) CreateTask(ctx context.Context, t *domain.Task) error {
 func (r *Repo) GetTask(ctx context.Context, owner, id kernel.ID) (*domain.Task, error) {
 	var t *domain.Task
 	err := r.db.Transaction(ctx, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `SELECT `+taskCols+` FROM task WHERE id=$1 AND owner=$2`, id, owner)
+		row := tx.QueryRow(ctx, `SELECT `+taskCols+` FROM task WHERE id=$1 AND owner=$2 AND deleted_at IS NULL`, id, owner)
 		got, err := scanTask(row)
 		if err != nil {
 			return err
@@ -158,7 +175,7 @@ func (r *Repo) GetTask(ctx context.Context, owner, id kernel.ID) (*domain.Task, 
 		}
 		// Load subtasks (owner-scoped as defense-in-depth so a mis-parented row
 		// from another member can never surface in this owner's task detail).
-		rows, err := tx.Query(ctx, `SELECT `+taskCols+` FROM task WHERE parent_id=$1 AND owner=$2 ORDER BY sort_order, created_at`, id, owner)
+		rows, err := tx.Query(ctx, `SELECT `+taskCols+` FROM task WHERE parent_id=$1 AND owner=$2 AND deleted_at IS NULL ORDER BY sort_order, created_at`, id, owner)
 		if err != nil {
 			return err
 		}
@@ -185,7 +202,7 @@ func (r *Repo) UpdateTask(ctx context.Context, t *domain.Task) error {
 		ct, err := tx.Exec(ctx,
 			`UPDATE task SET list_id=$1, title=$2, note=$3, priority=$4,
 			        due_date=$5, tags=$6, sort_order=$7, updated_at=now()
-			 WHERE id=$8 AND owner=$9`,
+			 WHERE id=$8 AND owner=$9 AND deleted_at IS NULL`,
 			t.ListID, t.Title, t.Note, t.Priority, t.DueDate,
 			t.Tags, t.SortOrder, t.ID, t.Owner)
 		if err != nil {
@@ -203,7 +220,8 @@ func (r *Repo) UpdateTask(ctx context.Context, t *domain.Task) error {
 func (r *Repo) SetTaskStatus(ctx context.Context, owner, id kernel.ID, status string, completedAt *time.Time) error {
 	return r.db.Transaction(ctx, func(tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
-			`UPDATE task SET status=$1, completed_at=$2, updated_at=now() WHERE id=$3 AND owner=$4`,
+			`UPDATE task SET status=$1, completed_at=$2, updated_at=now()
+			 WHERE id=$3 AND owner=$4 AND deleted_at IS NULL`,
 			status, completedAt, id, owner)
 		if err != nil {
 			return err
@@ -217,7 +235,18 @@ func (r *Repo) SetTaskStatus(ctx context.Context, owner, id kernel.ID, status st
 
 func (r *Repo) DeleteTask(ctx context.Context, owner, id kernel.ID) error {
 	return r.db.Transaction(ctx, func(tx pgx.Tx) error {
-		ct, err := tx.Exec(ctx, `DELETE FROM task WHERE id=$1 AND owner=$2`, id, owner)
+		ct, err := tx.Exec(ctx,
+			`WITH RECURSIVE tree AS (
+			   SELECT id FROM task WHERE id=$1 AND owner=$2 AND deleted_at IS NULL
+			   UNION ALL
+			   SELECT t.id FROM task t
+			   JOIN tree p ON t.parent_id = p.id
+			   WHERE t.owner=$2 AND t.deleted_at IS NULL
+			 )
+			 UPDATE task
+			 SET deleted_at=now(), updated_at=now()
+			 WHERE id IN (SELECT id FROM tree)`,
+			id, owner)
 		if err != nil {
 			return err
 		}
@@ -231,7 +260,7 @@ func (r *Repo) DeleteTask(ctx context.Context, owner, id kernel.ID) error {
 // ListTasks runs the list/smart-view query. Top-level only (parent_id IS NULL)
 // unless f.IncludeSubs. Ordering: incomplete first, then priority desc, then due, then sort.
 func (r *Repo) ListTasks(ctx context.Context, f domain.Filter) ([]*domain.Task, error) {
-	where := []string{"owner = $1"}
+	where := []string{"owner = $1", "deleted_at IS NULL"}
 	args := []any{f.Owner}
 	add := func(clause string, val any) {
 		args = append(args, val)
@@ -296,7 +325,7 @@ func (r *Repo) CountByView(ctx context.Context, owner kernel.ID) (map[string]int
 			  count(*) FILTER (WHERE status='todo' AND parent_id IS NULL AND due_date IS NOT NULL AND due_date < (date_trunc('day', now()) + interval '8 day')) AS next7,
 			  count(*) FILTER (WHERE status='todo' AND parent_id IS NULL AND due_date IS NOT NULL AND due_date < date_trunc('day', now())) AS overdue,
 			  count(*) FILTER (WHERE status='done' AND parent_id IS NULL) AS completed
-			FROM task WHERE owner=$1`, owner)
+			FROM task WHERE owner=$1 AND deleted_at IS NULL`, owner)
 		var allTodo, today, next7, overdue, completed int
 		if err := row.Scan(&allTodo, &today, &next7, &overdue, &completed); err != nil {
 			return err

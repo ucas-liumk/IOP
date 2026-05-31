@@ -2,7 +2,9 @@ package iam
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -21,6 +23,9 @@ type Repository interface {
 	GetUserByLogin(ctx context.Context, login string) (*PlatformUser, error)
 	GetUserByID(ctx context.Context, id kernel.ID) (*PlatformUser, error)
 	ListUsers(ctx context.Context, search string, limit int) ([]*PlatformUser, error)
+	// ListUsersPage returns one page of platform_users matching search plus the
+	// total count of matching rows (for server-side pagination).
+	ListUsersPage(ctx context.Context, search string, limit, offset int) ([]*PlatformUser, int, error)
 	UpdateUserStatus(ctx context.Context, id kernel.ID, status string) error
 	UpdateUserPassword(ctx context.Context, id kernel.ID, hash string) error
 	SetPasswordMustChange(ctx context.Context, id kernel.ID, must bool) error
@@ -38,6 +43,23 @@ type Repository interface {
 	ListMemberRoles(ctx context.Context, memberID kernel.ID, tenantID kernel.ID) ([]*Role, error)
 	GrantRole(ctx context.Context, g *RoleGrant) error
 	ListPolicyForRoles(ctx context.Context, roleIDs []kernel.ID) ([]*PolicyRule, error)
+
+	ListPlatformRolesForUser(ctx context.Context, platformUserID kernel.ID) ([]*Role, error)
+	ListPlatformRoles(ctx context.Context) ([]*Role, error)
+	GetPlatformRoleByCode(ctx context.Context, code string) (*Role, error)
+	GetPlatformRoleByID(ctx context.Context, id kernel.ID) (*Role, error)
+	CreatePlatformRole(ctx context.Context, id kernel.ID, code, name string) error
+	DeletePlatformRole(ctx context.Context, id kernel.ID) error
+	AddPlatformPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error
+	RemovePlatformPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error
+	GrantPlatformRole(ctx context.Context, roleID, platformUserID, grantedBy kernel.ID) error
+	RevokePlatformRole(ctx context.Context, roleID, platformUserID kernel.ID) error
+	ListPlatformRoleMembers(ctx context.Context, roleID kernel.ID) ([]kernel.ID, error)
+	// EnsureSuperAdminGrants grants the super_admin platform role to every platform_user
+	// whose is_platform_admin flag is set but who lacks the grant. Idempotent.
+	EnsureSuperAdminGrants(ctx context.Context) error
+	GetPlatformSetting(ctx context.Context, key string) (string, error)
+	SetPlatformSetting(ctx context.Context, key, value string, by kernel.ID) error
 }
 
 type pgRepo struct{ pool *pgxpool.Pool }
@@ -103,18 +125,45 @@ func (r *pgRepo) GetUserByUsername(ctx context.Context, username string) (*Platf
 		`SELECT `+userSelectCols+` FROM public.platform_user WHERE username = $1`, username))
 }
 
-// GetUserByLogin tries username first, then email — lets users sign in with either.
-// If the login string contains "@" we go straight to email lookup.
+// GetUserByLogin resolves a login string to a user. Username and phone are the
+// primary identities; email is a fallback so legacy email accounts keep working.
+//   - "@" present            → email lookup (the only form that can contain "@").
+//   - all digits (10-15 len) → phone lookup, then username as a fallback.
+//   - otherwise              → username, then email as a fallback.
+//
+// Email lookups stay safe when a user's email is NULL: the WHERE email = $1 simply
+// matches no rows rather than erroring.
 func (r *pgRepo) GetUserByLogin(ctx context.Context, login string) (*PlatformUser, error) {
 	if login == "" {
 		return nil, nil
 	}
-	if !strings.Contains(login, "@") {
-		if u, err := r.GetUserByUsername(ctx, login); err != nil || u != nil {
+	if strings.Contains(login, "@") {
+		return r.GetUserByEmail(ctx, login)
+	}
+	if isAllDigits(login) {
+		if u, err := r.GetUserByPhone(ctx, login); err != nil || u != nil {
 			return u, err
 		}
+		return r.GetUserByUsername(ctx, login)
+	}
+	if u, err := r.GetUserByUsername(ctx, login); err != nil || u != nil {
+		return u, err
 	}
 	return r.GetUserByEmail(ctx, login)
+}
+
+// isAllDigits reports whether s is a non-empty run of ASCII digits of plausible
+// phone length, so we only attempt a phone lookup for phone-shaped logins.
+func isAllDigits(s string) bool {
+	if len(s) < 6 || len(s) > 20 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *pgRepo) GetUserByID(ctx context.Context, id kernel.ID) (*PlatformUser, error) {
@@ -154,6 +203,52 @@ func (r *pgRepo) ListUsers(ctx context.Context, search string, limit int) ([]*Pl
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+func (r *pgRepo) ListUsersPage(ctx context.Context, search string, limit, offset int) ([]*PlatformUser, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	search = strings.TrimSpace(search)
+	var total int
+	var rows pgx.Rows
+	var err error
+	if search == "" {
+		if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM public.platform_user`).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		rows, err = r.pool.Query(ctx,
+			`SELECT `+userSelectCols+` FROM public.platform_user
+			 ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	} else {
+		pattern := "%" + strings.ToLower(search) + "%"
+		if err := r.pool.QueryRow(ctx,
+			`SELECT count(*) FROM public.platform_user
+			 WHERE LOWER(COALESCE(username,'')) LIKE $1
+			    OR LOWER(COALESCE(email,'')) LIKE $1
+			    OR COALESCE(phone,'') LIKE $1`, pattern).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		rows, err = r.pool.Query(ctx,
+			`SELECT `+userSelectCols+` FROM public.platform_user
+			 WHERE LOWER(COALESCE(username,'')) LIKE $1
+			    OR LOWER(COALESCE(email,'')) LIKE $1
+			    OR COALESCE(phone,'') LIKE $1
+			 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, pattern, limit, offset)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []*PlatformUser{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, u)
+	}
+	return out, total, rows.Err()
 }
 
 func (r *pgRepo) UpdateUserStatus(ctx context.Context, id kernel.ID, status string) error {
@@ -235,12 +330,16 @@ func (r *pgRepo) GetRoleByCode(ctx context.Context, code string, tenantID *kerne
 	var err error
 	if tenantID == nil {
 		err = r.pool.QueryRow(ctx,
-			`SELECT id, tenant_id, code, name, created_at FROM public.role WHERE code = $1 AND tenant_id IS NULL`,
-			code).Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt)
+			`SELECT id, tenant_id, code, name, COALESCE(status,'active'), COALESCE(order_num,0), COALESCE(remark,''), created_at
+			 FROM public.role
+			 WHERE lower(code) = lower($1) AND tenant_id IS NULL AND deleted_at IS NULL AND COALESCE(status,'active') = 'active'`,
+			code).Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.Status, &role.OrderNum, &role.Remark, &role.CreatedAt)
 	} else {
 		err = r.pool.QueryRow(ctx,
-			`SELECT id, tenant_id, code, name, created_at FROM public.role WHERE code = $1 AND tenant_id = $2`,
-			code, *tenantID).Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt)
+			`SELECT id, tenant_id, code, name, COALESCE(status,'active'), COALESCE(order_num,0), COALESCE(remark,''), created_at
+			 FROM public.role
+			 WHERE lower(code) = lower($1) AND tenant_id = $2 AND deleted_at IS NULL AND COALESCE(status,'active') = 'active'`,
+			code, *tenantID).Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.Status, &role.OrderNum, &role.Remark, &role.CreatedAt)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -253,9 +352,9 @@ func (r *pgRepo) GetRoleByCode(ctx context.Context, code string, tenantID *kerne
 
 func (r *pgRepo) ListMemberRoles(ctx context.Context, memberID kernel.ID, tenantID kernel.ID) ([]*Role, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.tenant_id, r.code, r.name, r.created_at
+		`SELECT r.id, r.tenant_id, r.code, r.name, COALESCE(r.status,'active'), COALESCE(r.order_num,0), COALESCE(r.remark,''), r.created_at
 		 FROM public.role_grant g JOIN public.role r ON r.id = g.role_id
-		 WHERE g.member_id = $1 AND g.tenant_id = $2`,
+		 WHERE g.member_id = $1 AND g.tenant_id = $2 AND r.deleted_at IS NULL AND COALESCE(r.status,'active') = 'active'`,
 		memberID, tenantID)
 	if err != nil {
 		return nil, err
@@ -264,7 +363,7 @@ func (r *pgRepo) ListMemberRoles(ctx context.Context, memberID kernel.ID, tenant
 	out := []*Role{}
 	for rows.Next() {
 		var role Role
-		if err := rows.Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.CreatedAt); err != nil {
+		if err := rows.Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.Status, &role.OrderNum, &role.Remark, &role.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &role)
@@ -310,4 +409,189 @@ func idOrNil(id *kernel.ID) any {
 		return nil
 	}
 	return *id
+}
+
+// idOrNilV returns nil for a zero kernel.ID so it inserts SQL NULL, else the id.
+func idOrNilV(id kernel.ID) any {
+	if id == "" {
+		return nil
+	}
+	return id
+}
+
+// --- Platform RBAC ---
+
+// ListPlatformRolesForUser returns the platform-level roles (tenant_id IS NULL)
+// granted to a platform_user via platform_role_grant.
+func (r *pgRepo) ListPlatformRolesForUser(ctx context.Context, platformUserID kernel.ID) ([]*Role, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT r.id, r.tenant_id, r.code, r.name, COALESCE(r.status,'active'), COALESCE(r.order_num,0), COALESCE(r.remark,''), r.created_at
+		 FROM public.platform_role_grant g JOIN public.role r ON r.id = g.role_id
+		 WHERE g.platform_user_id = $1 AND r.tenant_id IS NULL AND r.deleted_at IS NULL
+		   AND r.code NOT IN ('tenant_admin','tenant_member')
+		   AND COALESCE(r.status,'active') = 'active'`,
+		platformUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Role{}
+	for rows.Next() {
+		var role Role
+		if err := rows.Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.Status, &role.OrderNum, &role.Remark, &role.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &role)
+	}
+	return out, rows.Err()
+}
+
+// ListPlatformRoles returns all platform-level roles with member counts.
+func (r *pgRepo) ListPlatformRoles(ctx context.Context) ([]*Role, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT r.id, r.tenant_id, r.code, r.name, COALESCE(r.status,'active'), COALESCE(r.order_num,0), COALESCE(r.remark,''), r.created_at,
+		        (SELECT count(*) FROM public.platform_role_grant g WHERE g.role_id = r.id)
+		 FROM public.role r
+		 WHERE r.tenant_id IS NULL AND r.deleted_at IS NULL
+		   AND r.code NOT IN ('tenant_admin','tenant_member')
+		 ORDER BY COALESCE(r.order_num,0), r.created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Role{}
+	for rows.Next() {
+		var role Role
+		if err := rows.Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.Status, &role.OrderNum, &role.Remark, &role.CreatedAt, &role.MemberCount); err != nil {
+			return nil, err
+		}
+		out = append(out, &role)
+	}
+	return out, rows.Err()
+}
+
+// GetPlatformRoleByCode returns a platform role by code, or (nil, nil) if absent.
+func (r *pgRepo) GetPlatformRoleByCode(ctx context.Context, code string) (*Role, error) {
+	return r.GetRoleByCode(ctx, code, nil)
+}
+
+// GetPlatformRoleByID returns a platform role by ID, or (nil, nil) if absent.
+func (r *pgRepo) GetPlatformRoleByID(ctx context.Context, id kernel.ID) (*Role, error) {
+	var role Role
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, tenant_id, code, name, COALESCE(status,'active'), COALESCE(order_num,0), COALESCE(remark,''), created_at
+		 FROM public.role
+		 WHERE id = $1 AND tenant_id IS NULL AND deleted_at IS NULL
+		   AND code NOT IN ('tenant_admin','tenant_member')`, id).
+		Scan(&role.ID, &role.TenantID, &role.Code, &role.Name, &role.Status, &role.OrderNum, &role.Remark, &role.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &role, nil
+}
+
+// CreatePlatformRole inserts a custom platform role (tenant_id NULL).
+func (r *pgRepo) CreatePlatformRole(ctx context.Context, id kernel.ID, code, name string) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO public.role (id, tenant_id, code, name) VALUES ($1, NULL, $2, $3)`,
+		id, code, name)
+	return err
+}
+
+// DeletePlatformRole logically deletes a platform role.
+func (r *pgRepo) DeletePlatformRole(ctx context.Context, id kernel.ID) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE public.role
+		 SET deleted_at = now(), status = 'disabled'
+		 WHERE id = $1 AND tenant_id IS NULL AND deleted_at IS NULL`, id)
+	return err
+}
+
+func (r *pgRepo) AddPlatformPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO public.role_policy (role_id, resource, action, effect)
+		 VALUES ($1, $2, $3, 'allow') ON CONFLICT (role_id, resource, action) DO NOTHING`,
+		roleID, resource, action)
+	return err
+}
+
+func (r *pgRepo) RemovePlatformPolicy(ctx context.Context, roleID kernel.ID, resource, action string) error {
+	_, err := r.pool.Exec(ctx,
+		`DELETE FROM public.role_policy WHERE role_id = $1 AND resource = $2 AND action = $3`,
+		roleID, resource, action)
+	return err
+}
+
+func (r *pgRepo) GrantPlatformRole(ctx context.Context, roleID, platformUserID, grantedBy kernel.ID) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO public.platform_role_grant (role_id, platform_user_id, granted_by)
+		 VALUES ($1, $2, $3) ON CONFLICT (role_id, platform_user_id) DO NOTHING`,
+		roleID, platformUserID, idOrNilV(grantedBy))
+	return err
+}
+
+func (r *pgRepo) RevokePlatformRole(ctx context.Context, roleID, platformUserID kernel.ID) error {
+	_, err := r.pool.Exec(ctx,
+		`DELETE FROM public.platform_role_grant WHERE role_id = $1 AND platform_user_id = $2`,
+		roleID, platformUserID)
+	return err
+}
+
+func (r *pgRepo) ListPlatformRoleMembers(ctx context.Context, roleID kernel.ID) ([]kernel.ID, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT platform_user_id FROM public.platform_role_grant WHERE role_id = $1`, roleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []kernel.ID{}
+	for rows.Next() {
+		var id kernel.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (r *pgRepo) EnsureSuperAdminGrants(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO public.platform_role_grant (role_id, platform_user_id, granted_by)
+		 SELECT r.id, u.id, NULL
+		 FROM public.platform_user u
+		 CROSS JOIN public.role r
+		 WHERE u.is_platform_admin = TRUE AND r.code = 'super_admin'
+		   AND r.tenant_id IS NULL AND r.deleted_at IS NULL
+		 ON CONFLICT (role_id, platform_user_id) DO NOTHING`)
+	return err
+}
+
+func (r *pgRepo) GetPlatformSetting(ctx context.Context, key string) (string, error) {
+	var raw []byte
+	err := r.pool.QueryRow(ctx, `SELECT value FROM public.platform_setting WHERE key = $1`, key).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", fmt.Errorf("platform_setting %q is not a JSON string: %w", key, err)
+	}
+	return s, nil
+}
+
+func (r *pgRepo) SetPlatformSetting(ctx context.Context, key, value string, by kernel.ID) error {
+	v, _ := json.Marshal(value)
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO public.platform_setting (key, value, updated_by, updated_at)
+		 VALUES ($1, $2::jsonb, $3, now())
+		 ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, updated_by = $3, updated_at = now()`,
+		key, string(v), idOrNilV(by))
+	return err
 }

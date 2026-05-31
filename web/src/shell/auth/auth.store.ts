@@ -1,9 +1,19 @@
 import { defineStore } from "pinia";
 import { client } from "@/api/client";
+import type { MenuNode } from "@/shell/appcenter/appstore";
+import { hasPerm } from "./perm";
 
 interface User { id: string; email?: string; username?: string; phone?: string; password_must_change?: boolean }
 interface Tenant { id: string; slug: string; name: string }
 interface Token { access_token: string; refresh_token: string; access_expires_at: string }
+
+// MenuTreeNode = a server MenuNode plus its nested children (the /me/menus +
+// /admin/menus + /platform/menus APIs return the tree already assembled).
+export interface MenuTreeNode extends MenuNode {
+  children: MenuTreeNode[];
+}
+
+type Console = "tenant" | "platform";
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
@@ -13,12 +23,24 @@ export const useAuthStore = defineStore("auth", {
     tenant: null as Tenant | null,
     tenants: [] as Tenant[],
     isPlatformAdmin: false,
+    hasPlatformAccess: false,
     isTenantAdmin: false,
     restored: false, // becomes true once restore() has run this page-load
+    // RBAC: visible menu trees per console (driven by /me/menus) + flat perm set.
+    menusTenant: [] as MenuTreeNode[],
+    menusPlatform: [] as MenuTreeNode[],
+    permsTenant: [] as string[],
+    permsPlatform: [] as string[],
+    // perms is the MERGED set across consoles — what v-perm checks against, so a
+    // button gates correctly regardless of which console it renders in.
+    perms: [] as string[],
   }),
   getters: {
     loggedIn: (s) => !!s.accessToken,
     inTenant: (s) => !!s.tenant,
+    // hasPerm(key) — wildcard-aware ("*:*" / "res:*" / exact) check against the
+    // merged perm set. Use in components/guards; v-perm uses the same helper.
+    hasPerm: (s) => (key: string) => hasPerm(s.perms, key),
   },
   actions: {
     async login(username: string, password: string) {
@@ -28,6 +50,8 @@ export const useAuthStore = defineStore("auth", {
       this.setToken(tok.access_token, tok.refresh_token);
       await this.loadMyTenants();
       await this.loadAdminFlags(); // works without a tenant (global platform_admin)
+      await this.loadMenus();
+      await this.loadPerms();
       this.restored = true;
     },
     // restore rehydrates user + tenants from the surviving token after a full page
@@ -43,6 +67,8 @@ export const useAuthStore = defineStore("auth", {
         const preferred = res.data.data?.tenant_id || localStorage.getItem("iop.tenant_id") || "";
         await this.loadMyTenants(preferred);
         await this.loadAdminFlags();
+        await this.loadMenus();
+        await this.loadPerms();
       } catch {
         // Token invalid / expired — drop it so the guard sends the user to /login.
         this.clearSession();
@@ -59,7 +85,13 @@ export const useAuthStore = defineStore("auth", {
       this.tenant = null;
       this.tenants = [];
       this.isPlatformAdmin = false;
+      this.hasPlatformAccess = false;
       this.isTenantAdmin = false;
+      this.menusTenant = [];
+      this.menusPlatform = [];
+      this.permsTenant = [];
+      this.permsPlatform = [];
+      this.perms = [];
       localStorage.removeItem("iop.access_token");
       localStorage.removeItem("iop.refresh_token");
       localStorage.removeItem("iop.tenant_id");
@@ -71,10 +103,44 @@ export const useAuthStore = defineStore("auth", {
         const res = await client.get("/me/admin");
         const d = res.data?.data ?? {};
         this.isPlatformAdmin = !!d.is_platform_admin;
+        this.hasPlatformAccess = !!(d.has_platform_access ?? d.is_platform_admin);
         this.isTenantAdmin = !!d.is_tenant_admin;
       } catch {
         this.isPlatformAdmin = false;
+        this.hasPlatformAccess = false;
         this.isTenantAdmin = false;
+      }
+    },
+    // loadMenus loads the visible menu tree for BOTH consoles (GET /me/menus).
+    // The tenant tree reflects the current tenant context (app enablement +
+    // member perms); the platform tree reflects platform-role policies. Best-effort:
+    // a non-platform user simply gets an empty platform tree.
+    async loadMenus() {
+      this.menusTenant = await this.fetchMenus("tenant");
+      this.menusPlatform = await this.fetchMenus("platform");
+    },
+    async fetchMenus(console: Console): Promise<MenuTreeNode[]> {
+      try {
+        const r = await client.get("/me/menus", { params: { console } });
+        return (r.data?.data?.menus ?? []) as MenuTreeNode[];
+      } catch {
+        return [];
+      }
+    },
+    // loadPerms loads the flat perm set for BOTH consoles (GET /me/perms) and
+    // stores a merged set in `perms` (what v-perm / hasPerm check). Per-console
+    // sets are kept too in case a caller needs console-scoped gating.
+    async loadPerms() {
+      this.permsTenant = await this.fetchPerms("tenant");
+      this.permsPlatform = await this.fetchPerms("platform");
+      this.perms = Array.from(new Set([...this.permsTenant, ...this.permsPlatform]));
+    },
+    async fetchPerms(console: Console): Promise<string[]> {
+      try {
+        const r = await client.get("/me/perms", { params: { console } });
+        return (r.data?.data?.perms ?? []) as string[];
+      } catch {
+        return [];
       }
     },
     setToken(access: string, refresh: string) {
@@ -99,6 +165,9 @@ export const useAuthStore = defineStore("auth", {
       this.tenant = this.tenants.find((t) => t.id === tenantId) ?? null;
       localStorage.setItem("iop.tenant_id", tenantId);
       await this.loadAdminFlags();
+      // Tenant context changed — refresh tenant-scoped menus/perms.
+      await this.loadMenus();
+      await this.loadPerms();
     },
   },
 });

@@ -35,11 +35,41 @@ type Manifest struct {
 	Name        string       `json:"name"`        // "OKR 工作安排"
 	Description string       `json:"description"` // shown in AppCenter
 	Icon        string       `json:"icon"`        // SVG path data
-	Color       string       `json:"color"`       // CSS color (var(--cat-collab))
-	Category    string       `json:"category"`    // "协同办公" | "业务管理" | ...
+	Color       string       `json:"color"`       // CSS color (var(--cat-goal))
+	Category    string       `json:"category"`    // default display category; tenant admins may override
 	Version     string       `json:"version"`     // "1.0.0"
 	Permissions []Permission `json:"permissions"` // RBAC resource×action declarations
 	Events      []string     `json:"events"`      // event topics this module publishes
+	Menus       []MenuNode   `json:"menus"`       // console nav nodes this module contributes
+}
+
+// MenuNode is one node in a console's navigation/permission catalog. Modules
+// declare them in their Manifest; the platform aggregates them (plus built-in
+// console menus) into a tree. A node is VISIBLE to a user when: Console matches
+// the current console; AND (Perm == "" OR the user's role policies permit the
+// split "resource:action"); AND (App == "" OR that app is enabled for the tenant).
+type MenuNode struct {
+	ID            string `json:"id,omitempty"`
+	Key           string `json:"key"`       // unique, e.g. "okr.plans"
+	Title         string `json:"title"`     // "我的计划"
+	Icon          string `json:"icon"`      // SVG path data
+	Path          string `json:"path"`      // frontend route, e.g. "/okr/plans" (dir nodes may be empty)
+	Component     string `json:"component"` // frontend component path; reserved for dynamic-route loaders
+	Parent        string `json:"parent"`    // parent node Key; "" = top level
+	Type          string `json:"type"`      // "dir" | "menu" | "button" | "link" | "iframe" | "micro"
+	Console       string `json:"console"`   // "platform" | "tenant" | "both"
+	App           string `json:"app"`       // owning module code (gated by AppEnabled); "" for built-in
+	Perm          string `json:"perm"`      // required permission "resource:action"; "" = login/App only
+	Order         int    `json:"order"`
+	Visible       bool   `json:"visible"`
+	Cacheable     bool   `json:"cacheable"`
+	Status        string `json:"status"`
+	ExternalURL   string `json:"external_url,omitempty"`
+	IframeURL     string `json:"iframe_url,omitempty"`
+	MicroAppCode  string `json:"micro_app_code,omitempty"`
+	MicroEntry    string `json:"micro_entry,omitempty"`
+	BuiltIn       bool   `json:"built_in"`
+	TenantEnabled *bool  `json:"tenant_enabled,omitempty"`
 }
 
 // Permission is one (resource, action) tuple a module exposes to RBAC.
@@ -57,10 +87,24 @@ type Permission struct {
 // role editor can grant it. Admins (tenant_admin / platform_admin) bypass.
 type AuthzFunc func(resource, action string) gin.HandlerFunc
 
-// AppEnabledFunc reports whether a tenant has enabled (installed) the given app
-// code via the AppStore. Used by the Registry to gate module routes so that
-// disabling an app actually blocks its API, not just its UI visibility.
-type AppEnabledFunc func(ctx context.Context, tenantID kernel.ID, code string) (bool, error)
+// ScopeSpec is the resolved row-level data scope for the current tenant member.
+// It intentionally mirrors iam.ScopeSpec without making business modules import
+// the iam package directly.
+type ScopeSpec struct {
+	Kind         string
+	DeptIDs      []kernel.ID
+	SelfMemberID kernel.ID
+}
+
+// DataScopeFunc resolves row-level data access for a tenant member. Modules use
+// it to enforce object-level visibility in addition to route-level RBAC.
+type DataScopeFunc func(ctx context.Context, memberID, tenantID kernel.ID) (ScopeSpec, error)
+
+// AppEnabledFunc reports whether the given app code is usable for the requesting
+// user in a tenant: enabled at the TENANT level (org installed it) OR added by
+// the USER to their own workspace. Used by the Registry to gate module routes so
+// that disabling an app actually blocks its API, not just its UI visibility.
+type AppEnabledFunc func(ctx context.Context, tenantID, platformUserID kernel.ID, code string) (bool, error)
 
 // Deps is what app.Build() injects into each module constructor.
 // Modules NEVER reach for globals — everything they need is here.
@@ -74,6 +118,8 @@ type Deps struct {
 	// Authz gates module routes by declared permission. Never nil in production
 	// wiring; modules should still guard against nil for unit tests.
 	Authz AuthzFunc
+	// DataScope resolves row-level data access for the active member/tenant.
+	DataScope DataScopeFunc
 	// AppEnabled, when set, gates each module's routes on tenant AppStore enablement.
 	AppEnabled AppEnabledFunc
 }
