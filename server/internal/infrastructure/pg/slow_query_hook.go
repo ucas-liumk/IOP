@@ -8,12 +8,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
+
+	"github.com/leo/iop/server/internal/infrastructure/metrics"
 )
 
 // SlowQueryMs is the warn threshold; queries over this are logged + counted.
 const SlowQueryMs = 200
 
-var slowQueryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+// Registered on the served metrics registry (not the global default) so that
+// iop_pg_slow_query_total is actually scrapeable at /metrics.
+var slowQueryTotal = promauto.With(metrics.Registerer()).NewCounterVec(prometheus.CounterOpts{
 	Name: "iop_pg_slow_query_total",
 	Help: "PostgreSQL queries that exceeded slow query threshold.",
 }, []string{"severity"})

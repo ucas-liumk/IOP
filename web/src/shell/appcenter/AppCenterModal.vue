@@ -19,8 +19,8 @@
         <div class="ac-body">
           <!-- 我的应用 -->
           <div class="ac-sec-head">
-            <span class="t">我的应用</span>
-            <span class="hint">{{ myApps.length }} 个 · 拖动排序 · 点击进入</span>
+            <span class="t">已展示应用</span>
+            <span class="hint">{{ myApps.length }} 个 · 拖动排序 · 点击进入 · 点 × 取消展示</span>
           </div>
           <div v-if="myApps.length > 0" class="my-apps-strip">
             <div
@@ -42,24 +42,27 @@
               <span class="m-grip" title="拖动排序">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
               </span>
+              <button class="m-remove" title="取消展示" @click.stop="removeFromMine(a)">
+                ×
+              </button>
             </div>
           </div>
           <div v-else class="empty-row">尚无应用 · 在下方应用市场添加</div>
 
           <!-- 应用市场 -->
-          <div v-for="(apps, cat) in catalogByCategory" :key="cat" class="cat-block">
+          <div v-for="group in catalogGroups" :key="group.category" class="cat-block">
             <div class="cat-title">
-              <span class="cat-dot" :style="{ background: apps[0]?.color || 'var(--text-4)' }"></span>
-              {{ cat }}
-              <span class="cat-count">{{ apps.length }}</span>
+              <span class="cat-dot" :style="{ background: group.color }"></span>
+              {{ group.category }}
+              <span class="cat-count">{{ group.apps.length }}</span>
             </div>
             <div class="app-grid">
               <button
-                v-for="a in apps"
+                v-for="a in group.apps"
                 :key="a.code"
                 class="app-cell"
                 :class="{ 'is-installed': isMine(a.code) }"
-                @click="toggle(a)"
+                @click="addFromCatalog(a)"
               >
                 <div class="c-ico" :style="{ background: a.color }">
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path :d="a.icon"/></svg>
@@ -80,7 +83,7 @@
             </div>
             <div class="app-grid">
               <button v-for="a in comingSoon" :key="a.code" class="app-cell is-soon" disabled>
-                <div class="c-ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7" x2="12" y2="13"/><circle cx="12" cy="17" r=".7" fill="currentColor"/></svg></div>
+                <div class="c-ico" :style="{ background: a.color }"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path :d="a.icon"/></svg></div>
                 <span class="c-tag soon">敬请期待</span>
                 <div class="c-name">{{ a.name }}</div>
               </button>
@@ -94,12 +97,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { getCatalog, getMyApps, addMyApp, removeMyApp, setMyAppOrder, appHomeRoute, type CatalogEntry, type Manifest } from "./appstore";
+import { getCatalog, getMyApps, getAppCategories, addMyApp, removeMyApp, setMyAppOrder, appHomeRoute, type AppCategory, type CatalogEntry, type Manifest } from "./appstore";
 import { useNotification } from "@/shell/notify";
-import { useConfirm } from "@/shell/confirm";
 
 const notify = useNotification();
-const { confirm } = useConfirm();
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ (e: "close"): void; (e: "navigate", path: string): void }>();
@@ -113,26 +114,35 @@ const loading = ref(false);
 
 // Future-app placeholders to make the marketplace feel populated.
 const comingSoon = ref<Manifest[]>([
-  { code: "approval", name: "审批流程", description: "通用审批引擎", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11", color: "var(--cat-collab)", category: "协同办公", version: "0.9.0", permissions: [], events: [] },
   { code: "crm", name: "客户管理 CRM", description: "销售线索到合同", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-biz)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
-  { code: "finance", name: "财务管理", description: "收支与对账", icon: "M12 1v23M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6", color: "var(--cat-finance)", category: "财务税务", version: "0.5.0", permissions: [], events: [] },
-  { code: "hr", name: "HR 一体化", description: "人事考勤薪酬", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-hr)", category: "人力资源", version: "0.5.0", permissions: [], events: [] },
-  { code: "report", name: "报表中心", description: "跨应用数据看板", icon: "M18 20V10M12 20V4M6 20v-6", color: "var(--cat-data)", category: "数据分析", version: "0.5.0", permissions: [], events: [] },
+  { code: "finance", name: "财务管理", description: "收支与对账", icon: "M12 1v23M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6", color: "var(--cat-finance)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
+  { code: "hr", name: "HR 一体化", description: "人事考勤薪酬", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 1 0 0", color: "var(--cat-hr)", category: "业务管理", version: "0.5.0", permissions: [], events: [] },
+  { code: "report", name: "报表中心", description: "跨应用数据看板", icon: "M18 20V10M12 20V4M6 20v-6", color: "var(--cat-data)", category: "数据工具", version: "0.5.0", permissions: [], events: [] },
 ]);
 
 const myCodes = computed(() => new Set(myApps.value.map((a) => a.code)));
+const categories = ref<AppCategory[]>([]);
 const filtered = computed(() => {
   if (!q.value) return catalog.value;
   return catalog.value.filter((a) =>
     a.name.includes(q.value) || a.code.includes(q.value.toLowerCase())
   );
 });
-const catalogByCategory = computed(() => {
+const categoryRank = computed(() => new Map(categories.value.map((c) => [c.name, c.order])));
+const categoryColor = computed(() => new Map(categories.value.map((c) => [c.name, c.color])));
+const catalogGroups = computed(() => {
   const out: Record<string, CatalogEntry[]> = {};
   for (const a of filtered.value) {
-    (out[a.category] ??= []).push(a);
+    const category = a.category || "其他";
+    (out[category] ??= []).push(a);
   }
-  return out;
+  return Object.entries(out)
+    .sort(([a], [b]) => (categoryRank.value.get(a) ?? 999) - (categoryRank.value.get(b) ?? 999) || a.localeCompare(b))
+    .map(([category, apps]) => ({
+      category,
+      apps,
+      color: categoryColor.value.get(category) || apps[0]?.color || "var(--text-4)",
+    }));
 });
 
 // A catalog cell is "added" when it is in the user's own workspace.
@@ -146,28 +156,35 @@ watch(() => props.open, (v) => { if (v) reload(); });
 async function reload() {
   loading.value = true;
   try {
-    const [cat, mine] = await Promise.all([getCatalog(), getMyApps()]);
+    const [cat, mine, cats] = await Promise.all([getCatalog(), getMyApps(), getAppCategories()]);
     catalog.value = cat;
     myApps.value = mine;
+    categories.value = cats;
   } catch {
     catalog.value = [];
     myApps.value = [];
+    categories.value = [];
   } finally {
     loading.value = false;
   }
 }
 
-async function toggle(a: CatalogEntry) {
+async function addFromCatalog(a: CatalogEntry) {
+  if (isMine(a.code)) return;
   try {
-    if (isMine(a.code)) {
-      if (!(await confirm({ title: "确认", message: `从工作台移除 "${a.name}"？`, danger: true }))) return;
-      await removeMyApp(a.code);
-    } else {
-      await addMyApp(a.code);
-    }
+    await addMyApp(a.code);
     await reload();
   } catch (e: any) {
     notify.error(e.response?.data?.error?.message ?? "操作失败");
+  }
+}
+
+async function removeFromMine(a: Manifest) {
+  try {
+    await removeMyApp(a.code);
+    await reload();
+  } catch (e: any) {
+    notify.error(e.response?.data?.error?.message ?? "取消展示失败");
   }
 }
 
@@ -301,13 +318,34 @@ function onDragEnd() {
 .my-tile.is-over { background: var(--primary-soft); box-shadow: inset 0 0 0 1.5px var(--primary); }
 .my-tile .m-grip {
   position: absolute;
-  top: 5px; right: 5px;
+  top: 5px; left: 5px;
   color: var(--text-4);
   opacity: 0;
   transition: opacity .12s;
   pointer-events: none;
 }
 .my-tile:hover .m-grip { opacity: 1; }
+.my-tile:hover .m-remove { opacity: 1; }
+.my-tile .m-remove {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 20px; height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  display: grid; place-items: center;
+  font-size: 15px;
+  line-height: 1;
+  transition: opacity .12s, background .12s, color .12s;
+}
+.my-tile .m-remove:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
 .my-tile .m-ico {
   width: 44px; height: 44px;
   border-radius: 12px;
@@ -354,7 +392,7 @@ function onDragEnd() {
   color: #fff;
   position: relative;
 }
-.app-cell.is-soon .c-ico { background: var(--bg-deep) !important; color: var(--text-4); }
+.app-cell.is-soon .c-ico { opacity: .72; }
 .app-cell .c-name {
   font-size: 12px; font-weight: 500;
   color: var(--text);

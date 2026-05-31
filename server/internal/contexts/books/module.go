@@ -29,8 +29,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "图书馆管理：图书录入与馆藏管理、按书名/作者/ISBN 检索、在线借阅与归还、借阅记录追踪",
 		// Open-book icon.
 		Icon:     "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-resource)",
+		Category: "知识内容",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "books.book", Action: "read", Label: "查看图书 / 借阅记录"},

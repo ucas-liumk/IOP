@@ -37,8 +37,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "按年/半年/月/周分层管理目标，配合日报、周报与跨部门汇总",
 		// Bullseye icon — matches the left-rail SVG already in use
 		Icon:     "M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-3a1 1 0 1 1 0-2 1 1 0 0 1 0 2z",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-goal)",
+		Category: "工作协同",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "okr.plan", Action: "read", Label: "查看计划"},
@@ -52,6 +52,19 @@ func (m *Module) Manifest() module.Manifest {
 			"okr.plan_created", "okr.plan_item_added", "okr.plan_item_completed",
 			"okr.plan_closed",
 			"okr.daily_submitted", "okr.weekly_submitted",
+		},
+		Menus: []module.MenuNode{
+			{Key: "okr.root", Title: "OKR 工作安排", Type: "dir", Console: "tenant", App: "okr", Order: 30,
+				Icon: "M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-3a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"},
+			{Key: "okr.plans", Title: "计划", Path: "/okr/plans", Parent: "okr.root",
+				Type: "menu", Console: "tenant", App: "okr", Perm: "okr.plan:read", Order: 31,
+				Icon: "M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"},
+			{Key: "okr.reports", Title: "报告", Path: "/okr/reports", Parent: "okr.root",
+				Type: "menu", Console: "tenant", App: "okr", Perm: "okr.report:read", Order: 32,
+				Icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 13h6M9 17h6"},
+			{Key: "okr.rollup", Title: "团队汇总", Path: "/okr/rollup", Parent: "okr.root",
+				Type: "menu", Console: "tenant", App: "okr", Perm: "okr.rollup:read", Order: 33,
+				Icon: "M3 3v18h18M7 16l4-4 3 3 5-6"},
 		},
 	}
 }

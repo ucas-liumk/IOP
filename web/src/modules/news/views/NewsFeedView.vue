@@ -195,7 +195,7 @@ onMounted(async () => {
   font-size: 14px;
 }
 .nf-cat:hover { background: var(--bg-2, #f3f4f6); }
-.nf-cat.active { background: var(--bg-active, #e0e7ff); color: var(--cat-collab, #4f46e5); font-weight: 600; }
+.nf-cat.active { background: var(--cat-content-soft, #fff0ea); color: var(--cat-content, #d14f27); font-weight: 600; }
 .nf-cat-label { flex: 1; }
 .nf-cat-count { font-size: 12px; color: var(--text-4, #9ca3af); }
 
@@ -239,7 +239,7 @@ onMounted(async () => {
 .nf-tag {
   padding: 1px 8px;
   background: var(--bg-active, #eef2ff);
-  color: var(--cat-collab, #4f46e5);
+  color: var(--cat-content, #d14f27);
   border-radius: 10px;
 }
 .nf-views { margin-left: auto; }
@@ -261,7 +261,7 @@ onMounted(async () => {
 .nf-back {
   border: none;
   background: transparent;
-  color: var(--cat-collab, #4f46e5);
+  color: var(--cat-content, #d14f27);
   cursor: pointer;
   font-size: 14px;
   margin-bottom: 16px;
@@ -274,7 +274,7 @@ onMounted(async () => {
   font-size: 15px;
   color: var(--text-2, #374151);
   background: var(--bg-2, #f9fafb);
-  border-left: 3px solid var(--cat-collab, #4f46e5);
+  border-left: 3px solid var(--cat-content, #d14f27);
   padding: 12px 16px;
   border-radius: 0 8px 8px 0;
   margin-bottom: 20px;

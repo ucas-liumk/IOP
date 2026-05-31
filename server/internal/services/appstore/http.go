@@ -35,7 +35,12 @@ func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
 			apiresp.Fail(c, err)
 			return
 		}
-		apiresp.OK(c, gin.H{"apps": svc.ManifestsFor(codes)})
+		apps, err := svc.ManifestsForTenant(ctx, tid, codes)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"apps": apps})
 	})
 
 	r.POST("/me/apps/:code", func(c *gin.Context) {
@@ -108,6 +113,10 @@ func currentUserTenant(c *gin.Context) (tid, puid kernel.ID, ok bool) {
 // RegisterCatalogRoutes mounts /apps/catalog under the auth+tenant group.
 // Returns every module the binary supports with an installed flag.
 func RegisterCatalogRoutes(r *gin.RouterGroup, svc *Service) {
+	r.GET("/apps/categories", func(c *gin.Context) {
+		apiresp.OK(c, gin.H{"categories": Categories()})
+	})
+
 	r.GET("/apps/catalog", func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		entries, err := svc.Catalog(c.Request.Context(), tid)
@@ -122,6 +131,25 @@ func RegisterCatalogRoutes(r *gin.RouterGroup, svc *Service) {
 // RegisterAdminRoutes mounts /admin/apps/:code/install (POST + DELETE).
 // Caller is expected to wrap with TenantAdminRequired.
 func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, authz AuthzFunc) {
+	r.PATCH("/admin/apps/:code/category", authz("app", "write"), func(c *gin.Context) {
+		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
+		claims, _ := iam.ClaimsFromContext(c.Request.Context())
+		code := c.Param("code")
+		var req struct {
+			Category string `json:"category"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.New(errors.KindParam, "appstore.bad_body", "请求体格式错误"))
+			return
+		}
+		manifest, err := svc.SetCategory(c.Request.Context(), tid, code, req.Category, claims.PlatformUserID)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"app": manifest})
+	})
+
 	r.POST("/admin/apps/:code/install", authz("app", "write"), func(c *gin.Context) {
 		tid, _ := kernel.TenantIDFromContext(c.Request.Context())
 		claims, _ := iam.ClaimsFromContext(c.Request.Context())
@@ -146,4 +174,93 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *Service, authz AuthzFunc) {
 		}
 		apiresp.OK(c, gin.H{"ok": true, "uninstalled": code})
 	})
+}
+
+// RegisterPlatformRoutes mounts tenant-targeted app management under the
+// tenant-less platform console. The target tenant is explicit in the request,
+// never inferred from a caller-controlled frontend route.
+func RegisterPlatformRoutes(r *gin.RouterGroup, svc *Service, authz AuthzFunc) {
+	r.GET("/platform/apps/categories", authz("app", "read"), func(c *gin.Context) {
+		apiresp.OK(c, gin.H{"categories": Categories()})
+	})
+
+	r.GET("/platform/apps/catalog", authz("app", "read"), func(c *gin.Context) {
+		tid, ok := tenantIDFromQuery(c)
+		if !ok {
+			return
+		}
+		entries, err := svc.Catalog(c.Request.Context(), tid)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"apps": entries})
+	})
+
+	r.PATCH("/platform/apps/:code/category", authz("app", "write"), func(c *gin.Context) {
+		claims, _ := iam.ClaimsFromContext(c.Request.Context())
+		var req struct {
+			TenantID string `json:"tenant_id"`
+			Category string `json:"category"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.New(errors.KindParam, "appstore.bad_body", "请求体格式错误"))
+			return
+		}
+		tid, ok := parseTenantID(c, req.TenantID)
+		if !ok {
+			return
+		}
+		manifest, err := svc.SetCategory(c.Request.Context(), tid, c.Param("code"), req.Category, claims.PlatformUserID)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"app": manifest})
+	})
+
+	r.POST("/platform/apps/:code/install", authz("app", "write"), func(c *gin.Context) {
+		claims, _ := iam.ClaimsFromContext(c.Request.Context())
+		var req struct {
+			TenantID string `json:"tenant_id"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiresp.Fail(c, errors.New(errors.KindParam, "appstore.bad_body", "请求体格式错误"))
+			return
+		}
+		tid, ok := parseTenantID(c, req.TenantID)
+		if !ok {
+			return
+		}
+		if err := svc.Install(c.Request.Context(), tid, c.Param("code"), claims.PlatformUserID); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true, "installed": c.Param("code")})
+	})
+
+	r.DELETE("/platform/apps/:code/install", authz("app", "write"), func(c *gin.Context) {
+		tid, ok := tenantIDFromQuery(c)
+		if !ok {
+			return
+		}
+		if err := svc.Uninstall(c.Request.Context(), tid, c.Param("code")); err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		apiresp.OK(c, gin.H{"ok": true, "uninstalled": c.Param("code")})
+	})
+}
+
+func tenantIDFromQuery(c *gin.Context) (kernel.ID, bool) {
+	return parseTenantID(c, c.Query("tenant_id"))
+}
+
+func parseTenantID(c *gin.Context, raw string) (kernel.ID, bool) {
+	tid, err := kernel.ParseID(raw)
+	if err != nil || tid == "" {
+		apiresp.Fail(c, errors.New(errors.KindParam, "appstore.missing_tenant", "请选择租户"))
+		return "", false
+	}
+	return tid, true
 }

@@ -357,7 +357,7 @@ onMounted(() => {
   font-size: 14px;
 }
 .nm-cat:hover { background: var(--bg-2, #f3f4f6); }
-.nm-cat.active { background: var(--bg-active, #e0e7ff); color: var(--cat-collab, #4f46e5); font-weight: 600; }
+.nm-cat.active { background: var(--cat-content-soft, #fff0ea); color: var(--cat-content, #d14f27); font-weight: 600; }
 .nm-cat-label { flex: 1; }
 .nm-cat-count { font-size: 12px; color: var(--text-4, #9ca3af); }
 
@@ -374,7 +374,7 @@ onMounted(() => {
   margin-left: auto;
   padding: 7px 16px;
   border: none;
-  background: var(--cat-collab, #4f46e5);
+  background: var(--cat-content, #d14f27);
   color: #fff;
   border-radius: 8px;
   cursor: pointer;
@@ -395,7 +395,7 @@ onMounted(() => {
   cursor: pointer;
   font-size: 13px;
   margin-right: 8px;
-  color: var(--cat-collab, #4f46e5);
+  color: var(--cat-content, #d14f27);
 }
 .nm-actions .ok { color: #16a34a; }
 .nm-actions .warn { color: #d97706; }
@@ -445,5 +445,5 @@ onMounted(() => {
   border-radius: 8px;
   cursor: pointer;
 }
-.nm-modal-foot .nm-primary { border: none; background: var(--cat-collab, #4f46e5); color: #fff; }
+.nm-modal-foot .nm-primary { border: none; background: var(--cat-content, #d14f27); color: #fff; }
 </style>

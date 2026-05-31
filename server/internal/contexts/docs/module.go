@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/leo/iop/server/internal/contexts/docs/application"
-	docsiface "github.com/leo/iop/server/internal/contexts/docs/interface"
 	"github.com/leo/iop/server/internal/contexts/docs/infrastructure"
+	docsiface "github.com/leo/iop/server/internal/contexts/docs/interface"
 	"github.com/leo/iop/server/internal/shared/module"
 )
 
@@ -30,8 +30,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "树形知识库 — 目录 / 文档，富文本编辑与保存，仿语雀 / 飞书文档 / Notion",
 		// Book / document icon.
 		Icon:     "M4 4a2 2 0 0 1 2-2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4z M14 2v6h6 M8 13h8 M8 17h8 M8 9h3",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-knowledge)",
+		Category: "知识内容",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "docs.node", Action: "read", Label: "查看知识库"},

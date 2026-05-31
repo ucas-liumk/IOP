@@ -147,7 +147,7 @@ onMounted(load);
 .ap-tpl-ico {
   width: 40px; height: 40px; border-radius: var(--r-md);
   display: grid; place-items: center; font-size: 20px;
-  background: var(--cat-collab); color: #fff;
+  background: var(--cat-workflow); color: #fff;
 }
 .ap-tpl-name { font-weight: 600; color: var(--text); }
 .ap-tpl-desc { font-size: 12px; color: var(--text-3); }

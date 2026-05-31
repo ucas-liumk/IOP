@@ -29,8 +29,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "清单 / 任务 / 子任务、优先级、截止日期、标签与「今天 / 最近7天 / 已完成」智能视图",
 		// Checklist icon.
 		Icon:     "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z M3 5h12v2H3z M3 11h8v2H3z",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-task)",
+		Category: "工作协同",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "tasks.list", Action: "read", Label: "查看清单"},
@@ -43,6 +43,11 @@ func (m *Module) Manifest() module.Manifest {
 		Events: []string{
 			"tasks.list_created", "tasks.task_created",
 			"tasks.task_completed", "tasks.task_reopened",
+		},
+		Menus: []module.MenuNode{
+			{Key: "tasks.home", Title: "任务清单", Path: "/tasks",
+				Type: "menu", Console: "tenant", App: "tasks", Perm: "tasks.task:read", Order: 40,
+				Icon: "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z M3 5h12v2H3z M3 11h8v2H3z"},
 		},
 	}
 }

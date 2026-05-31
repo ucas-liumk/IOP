@@ -138,23 +138,28 @@ func builtinMenus() []module.MenuNode {
 			Icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
 		},
 		{
+			Key: "platform.apps", Title: "应用管理", Path: "/platform/apps", Parent: "platform.system",
+			Type: "menu", Console: "platform", Perm: "app:read", Order: 21,
+			Icon: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+		},
+		{
 			Key: "platform.menus", Title: "菜单管理", Path: "/platform/menus", Parent: "platform.system",
-			Type: "menu", Console: "platform", Perm: "menu:read", Order: 21,
+			Type: "menu", Console: "platform", Perm: "menu:read", Order: 22,
 			Icon: "M3 12h18M3 6h18M3 18h18",
 		},
 		{
 			Key: "platform.dict", Title: "字典管理", Path: "/platform/dict", Parent: "platform.system",
-			Type: "menu", Console: "platform", Perm: "dict:read", Order: 22,
+			Type: "menu", Console: "platform", Perm: "dict:read", Order: 23,
 			Icon: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
 		},
 		{
 			Key: "platform.params", Title: "参数配置", Path: "/platform/params", Parent: "platform.system",
-			Type: "menu", Console: "platform", Perm: "param:read", Order: 23,
+			Type: "menu", Console: "platform", Perm: "param:read", Order: 24,
 			Icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33",
 		},
 		{
 			Key: "platform.notices", Title: "通知公告", Path: "/platform/notices", Parent: "platform.system",
-			Type: "menu", Console: "platform", Perm: "notice:read", Order: 24,
+			Type: "menu", Console: "platform", Perm: "notice:read", Order: 25,
 			Icon: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0",
 		},
 		// 监控 — logs / online / health / cron.

@@ -30,8 +30,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "看板式项目管理（仿 Teambition / Trello / Jira）：项目 / 看板列 / 卡片，拖拽流转、负责人、截止日期、优先级",
 		// A Kanban / columns glyph.
 		Icon:     "M3 3h7v7H3z M14 3h7v11h-7z M14 17h7v4h-7z M3 13h7v8H3z",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-project)",
+		Category: "工作协同",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "project", Action: "read", Label: "查看项目"},

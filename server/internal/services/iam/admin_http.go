@@ -635,7 +635,26 @@ func RegisterMeRoutes(r *gin.RouterGroup, svc *Service) {
 	})
 
 	r.POST("/me/sessions/:id/revoke", func(c *gin.Context) {
+		claims, _ := ClaimsFromContext(c.Request.Context())
 		sid, _ := kernel.ParseID(c.Param("id"))
+		// Ownership guard: a user may only revoke sessions that are their own
+		// (without this, any logged-in user could revoke any session id — IDOR).
+		sessions, err := svc.ListSessions(c.Request.Context(), claims.PlatformUserID, claims.SessionID)
+		if err != nil {
+			apiresp.Fail(c, err)
+			return
+		}
+		owned := false
+		for _, s := range sessions {
+			if s.ID == sid {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			apiresp.Fail(c, errors.New(errors.KindForbidden, "iam.session_not_owned", "无权操作该会话"))
+			return
+		}
 		if err := svc.Logout(c.Request.Context(), sid); err != nil {
 			apiresp.Fail(c, err)
 			return

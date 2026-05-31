@@ -229,12 +229,14 @@ func Build(ctx context.Context, cfg *config.Config) (*App, func(), error) {
 	// Add future modules here, e.g.:
 	//   registry.Register(crm.New(deps))
 
-	// Give the built-in tenant_member role read/write on every registered module's
-	// resources so members can use apps their tenant enabled (RBAC stays enforced;
-	// delete actions remain admin-only). Idempotent.
+	// Give the built-in tenant_member role every module action EXCEPT the
+	// admin-only ones (delete/manage), so members can actually use apps their
+	// tenant enabled — read/write plus member workflows like submit/approve/borrow
+	// (e.g. initiate or approve an approval, borrow/return a book). delete/manage
+	// stay reserved for tenant_admin. RBAC stays enforced; idempotent.
 	var memberPerms [][2]string
 	for _, p := range registry.AllPermissions() {
-		if p.Action == "read" || p.Action == "write" {
+		if p.Action != "delete" && p.Action != "manage" {
 			memberPerms = append(memberPerms, [2]string{p.Resource, p.Action})
 		}
 	}
@@ -419,6 +421,9 @@ func (a *App) Engine() *gin.Engine {
 	// because member management spans both services and iam already imports
 	// tenancy — registering here keeps the wiring acyclic.
 	iam.RegisterPlatformOrgMemberRoutes(platform, a.IAM, a.Audit, a.Pool)
+	// Platform-side app management: choose any tenant explicitly and manage that
+	// tenant's enabled apps + display categories without switching tenant context.
+	appstore.RegisterPlatformRoutes(platform, a.AppStore, platformAuthz)
 	// Complete platform-console menu catalog (unfiltered) for the role editor.
 	a.RegisterPlatformMenuCatalogRoute(platform, platformAuthz)
 

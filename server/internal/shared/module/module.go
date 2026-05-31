@@ -35,8 +35,8 @@ type Manifest struct {
 	Name        string       `json:"name"`        // "OKR 工作安排"
 	Description string       `json:"description"` // shown in AppCenter
 	Icon        string       `json:"icon"`        // SVG path data
-	Color       string       `json:"color"`       // CSS color (var(--cat-collab))
-	Category    string       `json:"category"`    // "协同办公" | "业务管理" | ...
+	Color       string       `json:"color"`       // CSS color (var(--cat-goal))
+	Category    string       `json:"category"`    // default display category; tenant admins may override
 	Version     string       `json:"version"`     // "1.0.0"
 	Permissions []Permission `json:"permissions"` // RBAC resource×action declarations
 	Events      []string     `json:"events"`      // event topics this module publishes

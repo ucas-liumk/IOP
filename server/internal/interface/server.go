@@ -3,6 +3,7 @@ package iface
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,7 @@ func New(cfg Config, logger *zap.Logger, healthReg *health.Registry) *gin.Engine
 	r.Use(middleware.Recover(logger))
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(logger))
+	r.Use(metricsMiddleware())
 	r.Use(middleware.CORS(cfg.AllowedOrigins))
 
 	// System endpoints (no auth, no tenant scope).
@@ -54,6 +56,24 @@ func New(cfg Config, logger *zap.Logger, healthReg *health.Registry) *gin.Engine
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(metrics.Registry(), promhttp.HandlerOpts{})))
 
 	return r
+}
+
+// metricsMiddleware observes request latency into the Prometheus histogram
+// served at /metrics. It labels by the matched route template (low cardinality)
+// — unmatched paths bucket under "unmatched" so a flood of bad URLs can't blow
+// up series cardinality.
+func metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		metrics.HTTPDuration.
+			WithLabelValues(route, c.Request.Method, strconv.Itoa(c.Writer.Status())).
+			Observe(time.Since(start).Seconds())
+	}
 }
 
 // Run wraps http.Server with graceful shutdown.

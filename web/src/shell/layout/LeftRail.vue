@@ -12,41 +12,41 @@
 
     <div class="rail-sep"></div>
 
-    <!-- Installed apps from /me/apps — driven by tenant_app + Module Registry -->
-    <router-link
-      v-for="app in myApps"
-      :key="app.code"
-      :to="appHomeRoute(app.code)"
-      class="rail-item installed"
-      :class="{ active: $route.path.startsWith(appHomeRoute(app.code).split('/').slice(0, 2).join('/')) }"
-      :title="app.name"
-    >
-      <div class="rail-ico" :style="{ background: app.color }">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path :d="app.icon"/>
-        </svg>
-      </div>
-      <div class="rail-label">{{ shortName(app.name) }}</div>
-      <span v-if="app.code === 'okr' && planCount > 0" class="rail-badge">{{ planCount > 99 ? '99+' : planCount }}</span>
-    </router-link>
+    <div class="rail-scroll" aria-label="已固定应用">
+      <!-- Installed apps from /me/apps — driven by tenant_app + Module Registry -->
+      <router-link
+        v-for="app in myApps"
+        :key="app.code"
+        :to="appHomeRoute(app.code)"
+        class="rail-item installed"
+        :class="{ active: $route.path.startsWith(appHomeRoute(app.code).split('/').slice(0, 2).join('/')) }"
+        :title="app.name"
+      >
+        <div class="rail-ico" :style="{ background: app.color }">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path :d="app.icon"/>
+          </svg>
+        </div>
+        <div class="rail-label">{{ shortName(app.name) }}</div>
+        <span v-if="app.code === 'okr' && planCount > 0" class="rail-badge">{{ planCount > 99 ? '99+' : planCount }}</span>
+      </router-link>
 
-    <router-link
-      v-if="admin.is_tenant_admin || admin.has_platform_access"
-      :to="admin.has_platform_access ? '/platform' : '/admin'"
-      class="rail-item admin-item"
-      :class="{ active: $route.path.startsWith('/admin') || $route.path.startsWith('/platform') }"
-      :title="admin.has_platform_access ? '平台控制台' : '组织控制台'"
-    >
-      <div class="rail-ico">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-        </svg>
-      </div>
-      <div class="rail-label">{{ admin.has_platform_access ? '平台' : '管理' }}</div>
-      <span v-if="admin.has_platform_access" class="platform-tag">P</span>
-    </router-link>
-
-    <div class="rail-spacer"></div>
+      <router-link
+        v-if="admin.is_tenant_admin || admin.has_platform_access"
+        :to="admin.has_platform_access ? '/platform' : '/admin'"
+        class="rail-item admin-item"
+        :class="{ active: $route.path.startsWith('/admin') || $route.path.startsWith('/platform') }"
+        :title="admin.has_platform_access ? '平台控制台' : '组织控制台'"
+      >
+        <div class="rail-ico">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
+        <div class="rail-label">{{ admin.has_platform_access ? '平台' : '管理' }}</div>
+        <span v-if="admin.has_platform_access" class="platform-tag">P</span>
+      </router-link>
+    </div>
 
     <button class="rail-add" title="添加应用" @click="appCenterOpen = true">
       <div class="ico-plus">
@@ -115,10 +115,12 @@ function shortName(name: string): string {
   height: calc(100vh - 56px);
   align-self: start;
   z-index: 50;
+  overflow: hidden;
 }
 .rail-item {
   position: relative;
   width: 100%;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -152,14 +154,14 @@ function shortName(name: string): string {
   color: var(--primary);
 }
 .rail-item.active .rail-ico {
-  background: var(--primary) !important;
+  background: var(--primary);
   color: #fff;
-  box-shadow: 0 4px 10px rgba(30,95,217,.32);
+  box-shadow: 0 4px 10px rgba(13,27,46,.22);
 }
 .rail-item.active .rail-label { font-weight: 600; }
 
 .rail-item.installed .rail-ico { color: #fff; }
-.rail-item.installed:hover .rail-ico { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(30,95,217,.25); }
+.rail-item.installed:hover .rail-ico { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(13,27,46,.18); }
 
 .rail-item.admin-item .rail-ico {
   background: linear-gradient(135deg, var(--text-2), #0d1b2e);
@@ -193,11 +195,32 @@ function shortName(name: string): string {
 }
 
 .rail-sep { height: 1px; background: var(--border); margin: 6px 8px; }
-.rail-spacer { flex: 1; }
+
+.rail-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 4px;
+  margin-right: -4px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.rail-scroll::-webkit-scrollbar { width: 6px; }
+.rail-scroll::-webkit-scrollbar-track { background: transparent; }
+.rail-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
 
 .rail-add {
   position: relative;
   width: 100%;
+  flex: 0 0 auto;
   padding: 10px 4px;
   border-radius: 10px;
   display: flex;

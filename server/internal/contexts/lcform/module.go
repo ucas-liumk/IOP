@@ -31,8 +31,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "低代码在线表单：可视化设计字段（文本/数字/日期/下拉/勾选/金额/电话等），收集数据、分页查看与 CSV 导出，仿简道云 / 金数据 / Airtable",
 		// Clipboard-with-lines (form) icon.
 		Icon:     "M9 2h6a1 1 0 0 1 1 1v1h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V3a1 1 0 0 1 1-1z M8 11h8 M8 15h8",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-form)",
+		Category: "数据工具",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "lcform.def", Action: "manage", Label: "设计 / 管理表单"},

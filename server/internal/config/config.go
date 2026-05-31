@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -19,6 +20,9 @@ type Config struct {
 	} `mapstructure:"server"`
 	DB struct {
 		DSN string `mapstructure:"dsn"`
+		// AllowInsecure explicitly permits sslmode=disable in prod, for a DB on a
+		// trusted private network (e.g. the bundled compose db). Default false.
+		AllowInsecure bool `mapstructure:"allow_insecure"`
 	} `mapstructure:"db"`
 	Redis struct {
 		Addr string `mapstructure:"addr"`
@@ -67,6 +71,24 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&c); err != nil {
 		return nil, fmt.Errorf("config unmarshal: %w", err)
 	}
+
+	// viper does not reliably coerce a string env var into a []string / bool via
+	// Unmarshal, so apply these two env overrides explicitly. This lets the prod
+	// compose set an explicit CORS allowlist (required, since "*" is rejected in
+	// prod) and opt into an insecure DB link on a trusted private network.
+	if raw := strings.TrimSpace(os.Getenv("IOP_SERVER_ALLOWED_ORIGINS")); raw != "" {
+		var origins []string
+		for _, o := range strings.Split(raw, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		c.Server.AllowedOrigins = origins
+	}
+	if raw := strings.TrimSpace(os.Getenv("IOP_DB_ALLOW_INSECURE")); raw != "" {
+		c.DB.AllowInsecure = raw == "1" || strings.EqualFold(raw, "true") || strings.EqualFold(raw, "yes")
+	}
+
 	return &c, nil
 }
 
@@ -110,12 +132,18 @@ func (c *Config) Validate() (warnings []string, err error) {
 		}
 	}
 
-	// Postgres should use TLS in prod.
+	// Postgres should use TLS in prod, unless the operator explicitly opts out for
+	// a DB reached over a trusted private network (db.allow_insecure /
+	// IOP_DB_ALLOW_INSECURE) — e.g. the bundled compose db on an internal-only network.
 	if strings.Contains(c.DB.DSN, "sslmode=disable") {
-		if prod {
-			return warnings, fmt.Errorf("config: db.dsn uses sslmode=disable in env %q — require TLS in production", c.Env)
+		switch {
+		case prod && !c.DB.AllowInsecure:
+			return warnings, fmt.Errorf("config: db.dsn uses sslmode=disable in env %q — use sslmode=require in production, or set db.allow_insecure=true / IOP_DB_ALLOW_INSECURE=true if the DB is on a trusted private network", c.Env)
+		case prod:
+			warnings = append(warnings, "db.dsn uses sslmode=disable in prod — permitted only because db.allow_insecure is set; ensure the DB link is on a trusted private network")
+		default:
+			warnings = append(warnings, "db.dsn uses sslmode=disable — use sslmode=require in production")
 		}
-		warnings = append(warnings, "db.dsn uses sslmode=disable — use sslmode=require in production")
 	}
 
 	return warnings, nil

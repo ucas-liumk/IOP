@@ -2,7 +2,7 @@
   <WidgetCard
     title="我的待办"
     :icon="iconPath"
-    :source="{ code: 'okr', name: 'OKR 工作安排', color: 'var(--cat-collab)' }"
+    :source="{ code: 'okr', name: 'OKR 工作安排', color: 'var(--cat-task)' }"
     :more="{ label: '打开 OKR', to: '/okr/plans', go: () => router.push('/okr/plans') }"
     :config-mode="configMode"
   >

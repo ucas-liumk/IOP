@@ -31,8 +31,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "自定义审批模板（动态表单 + 审批流）、发起审批、多级审批/抄送、待办/已办/我发起/抄送我，仿钉钉审批·飞书审批",
 		// Document-with-check icon.
 		Icon:     "M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-workflow)",
+		Category: "工作协同",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "approval.form", Action: "manage", Label: "管理审批模板"},

@@ -2,7 +2,7 @@
   <WidgetCard
     title="本周议程"
     :icon="iconPath"
-    :source="{ code: 'okr', name: 'OKR 工作安排', color: 'var(--cat-collab)' }"
+    :source="{ code: 'okr', name: 'OKR 工作安排', color: 'var(--cat-goal)' }"
     :more="{ label: '查看周计划', to: '/okr/plans?level=week', go: () => router.push('/okr/plans') }"
     :config-mode="configMode"
   >
@@ -77,8 +77,8 @@ onMounted(async () => {
 .day-tag {
   font-size: 11px;
   font-weight: 600;
-  background: var(--cat-collab-soft, var(--info-soft));
-  color: var(--cat-collab, var(--info));
+  background: var(--cat-goal-soft, var(--info-soft));
+  color: var(--cat-goal, var(--info));
   padding: 3px 8px;
   border-radius: 6px;
   white-space: nowrap;

@@ -29,8 +29,8 @@ func (m *Module) Manifest() module.Manifest {
 		Description: "政务门户式资讯频道：栏目分类、文章撰写 / 发布 / 下线，面向员工的资讯阅读与详情。",
 		// Newspaper / article icon.
 		Icon:     "M4 4h16v16H4zM6 7h7v2H6zm0 4h12v2H6zm0 4h12v2H6zM15 7h3v2h-3z",
-		Color:    "var(--cat-collab)",
-		Category: "协同办公",
+		Color:    "var(--cat-content)",
+		Category: "知识内容",
 		Version:  "1.0.0",
 		Permissions: []module.Permission{
 			{Resource: "news.read", Action: "read", Label: "阅读资讯"},
